@@ -222,3 +222,4 @@ __marimo__/
 __pycache__/
 *.db
 streamlit_decisions.db
+__pycache__/
