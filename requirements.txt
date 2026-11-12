@@ -1,0 +1,6 @@
+# Core dependencies
+google-genai>=0.8.0
+streamlit>=1.35.0   # optional, for web UI
+
+# Optional – convenient .env handling (not required; os.getenv used)
+python-dotenv>=1.0.0
