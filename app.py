@@ -1,257 +1,183 @@
 """Streamlit web UI for the Temporal Paradox Resolver.
 
-Features:
-  • Capture a new decision (form).
-  • View stored decisions.
-  • Ask "what‑if" natural‑language questions about alternatives.
-  • Uses Google Gemini (via the provided API key) for simulations.
-  • Sidebar button to search for alternative options (placeholder API).
-
-Run with:
-    streamlit run app.py
+Run with:  streamlit run app.py
 """
 
-# ---------------------------------------------------------------------------
-# Placeholder for web‑search based alternative generation
-# ---------------------------------------------------------------------------
-def search_alternatives(keywords: str) -> str:
-    """Placeholder for a web‑search based alternative‑generation function.
+from __future__ import annotations
 
-    In a full implementation you would call a search API (e.g. Google Custom Search,
-    Bing Search, or a public scraper) with *keywords* and return a concise summary
-    of the most relevant alternatives, including a one‑sentence description and a
-    bullet list of pros/cons if available.
+import os
 
-    For now the function returns a friendly message telling the user what would
-    happen next.
-    """
-    return (
-        "🔎 Web‑search integration not yet configured. \n\n"
-        "To enable this feature you can:\n"
-        "1. Obtain a Google Custom Search JSON API key and CX ID.\n"
-        "2. Replace the function body with a call to the API, e.g.\n"
-        "   `response = requests.get('https://www.googleapis.com/customsearch/v1', "
-        "params={'key': API_KEY, 'cx': CX_ID, 'q': keywords})`. \n"
-        "3. Parse the `items` array and format the results as markdown.\n\n"
-        f"Searched keywords: *{keywords}*. \n"
-        "When the API is wired, the result will appear here automatically."
-    )
-
-# Ensure the parent directory is on the path so `temporal_paradox_resolver` package is findable
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import uuid
-import datetime as dt
-
-import json
 import streamlit as st
 
+from temporal_paradox_resolver import commitment as engine
+from temporal_paradox_resolver import llm
+from temporal_paradox_resolver.cli import parse_alternative
+from temporal_paradox_resolver.models import DecisionRecord, Doubt
 from temporal_paradox_resolver.store import DecisionStore
-from temporal_paradox_resolver.simulate import simulate_alternative, SIMULATION_PROMPT
-from temporal_paradox_resolver.models import DecisionRecord
 
-# ---------------------------------------------------------------------------
-# Page configuration
-# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Temporal Paradox Resolver", page_icon="⏳", layout="centered")
 
+COLORS = {engine.HOLD: "#2e7d32", engine.WATCH: "#ed6c02", engine.RECONSIDER: "#c62828"}
+
+
+@st.cache_resource
+def get_store() -> DecisionStore:
+    return DecisionStore(os.getenv("TPR_DB", "decisions.db"))
+
+
+def lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def show_verdict(verdict: engine.Verdict) -> None:
+    color = COLORS[verdict.decision]
+    st.markdown(
+        f"<div style='border-left:6px solid {color};padding:0.6rem 1rem;border-radius:4px'>"
+        f"<b style='color:{color};font-size:1.3rem'>{verdict.decision}</b>"
+        f"&nbsp;&nbsp;evidence {verdict.evidence:.1f} of {verdict.threshold:.1f} needed</div>",
+        unsafe_allow_html=True,
+    )
+    st.progress(min(1.0, verdict.ratio))
+    for reason in verdict.reasons:
+        st.write("• " + reason)
+    if verdict.scored_doubts:
+        with st.expander("How each doubt was weighed"):
+            for s in verdict.scored_doubts:
+                st.write(f"**{s.score:.2f}** · {s.doubt.text}")
+                st.caption("; ".join(s.factors))
+
+
+store = get_store()
 st.title("⏳ Temporal Paradox Resolver")
-st.caption("Your personal decision‑time capsule. Archive choices today, explore alternate timelines tomorrow.")
+st.caption("Decide once, calmly. Then hold, unless something real changes.")
+if not llm.available():
+    st.caption("Running offline: set GEMINI_API_KEY for richer what-if and past-self answers.")
+
+tab_capture, tab_hold, tab_explore = st.tabs(["📝 Decide", "🔒 Hold the line", "🔮 Explore"])
 
 # ---------------------------------------------------------------------------
-# Initialize store (singleton per session)
-# ---------------------------------------------------------------------------
-if "store" not in st.session_state:
-    GEMINI_API_KEY = __import__("os").getenv("GEMINI_API_KEY")
-    if not GEMINI_API_KEY:
-        st.error(
-            "🔑 GEMINI_API_KEY not set. Add it to your environment, e.g.:\n"
-            "`export GEMINI_API_KEY='YOUR_GEMINI_API_KEY_HERE'`"
+with tab_capture:
+    with st.form("capture", clear_on_submit=True):
+        choice = st.text_area("What did you decide? (your own words)*")
+        alts = st.text_area(
+            "Every option you weighed, one per line: Name | pro; pro | con; con*",
+            placeholder="Startup | learning; ownership | risk; lower pay\nBank | salary; stability | slow growth",
         )
-        st.stop()
-    st.session_state.store = DecisionStore(db_path="streamlit_decisions.db")
-
-store = st.session_state.store
-
-# ---------------------------------------------------------------------------
-# Helper: capture form
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.header("📝 Capture a New Decision")
-    with st.form("capture_form", clear_on_submit=False):
-        choice = st.text_area("Describe the decision (your exact words)*", height=120)
-        st.caption("* required")
-        st.subheader("Values you're ranking (one per line)*")
-        values_input = st.text_area("e.g. financial security\nwork-life balance\nlocation", height=100)
-        st.caption("* required")
-        alternatives_st = st.text_area(
-            "Alternatives (one per block). For each: name, then pros (one per line), then cons (one per line).\n"
-            "Terminate each block with an empty line.",
-            height=200,
-        )
-        context_time = st.selectbox("Time of day", ["morning", "afternoon", "evening"], index=2)
-        energy = st.slider("Energy level (1‑10)", 1, 10, 6)
-        stressors = st.text_area("Stressors (comma‑separated)", "")
-        notes = st.text_area("Any additional notes (free‑form)")
-        tags = st.text_input("Tags (comma‑separated)", "career,2024,major")
-        submitted = st.form_submit_button("Save Decision")
+        chosen = st.text_input("Which option did you choose?*")
+        values = st.text_area("What matters most here, ranked (one per line)*")
+        reasoning = st.text_area("Why this option?")
+        st.divider()
+        conviction = st.slider("How sure are you?", 1, 10, 7)
+        anchor = st.text_area("A note to your future self, for the day you doubt this")
+        tripwires = st.text_area("I will reconsider ONLY if... (one condition per line)")
+        cooling = st.number_input("Cooling period (days)", 0, 365, 30)
+        tags = st.text_input("Tags (comma-separated)")
+        submitted = st.form_submit_button("Decide and commit")
 
     if submitted:
-        # --- Validate required fields ---
-        if not choice.strip():
-            st.error("Choice is required.")
-            st.stop()
-        if not values_input.strip():
-            st.error("At least one value must be provided.")
-            st.stop()
-        # Parse alternatives blocks
-        blocks = [b.strip() for b in alternatives_st.split("\n\n") if b.strip()]
-        if not blocks:
-            st.error("At least one alternative must be provided.")
-            st.stop()
-
-        # Parse values (keep only non‑empty lines)
-        values = [v.strip() for v in values_input.splitlines() if v.strip()]
-
-        # Parse each alternative block
-        alternatives = []
-        for block in blocks:
-            lines = [l.strip() for l in block.splitlines() if l.strip()]
-            if not lines:
-                continue
-            name = lines[0]
-            pros = lines[1:] if len(lines) > 1 else []
-            # Cons may be on a separate "Cons" marker; for simplicity, treat remaining as cons
-            # Actually we need structured parsing; skip for now and just capture name
-            alternatives.append({"name": name, "pros": pros, "cons": []})
-
-        # -------------------------------------------------------
-
-        # Parse stressors
-        context = {"time_of_day": context_time, "energy_level": energy, "stressors": [s.strip() for s in stressors.split(",") if s.strip()]}
-
-        record = DecisionRecord(
-            id=str(uuid.uuid4()),
-            timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
-            choice=choice,
-            values_ranked=values,
-            alternatives=alternatives,
-            context=context,
-            notes=notes or "",
-            tags=[t.strip() for t in tags.split(",") if t.strip()],
-        )
-
-        store.add(record)
-        st.success(f"✅ Decision saved (ID: {record.id[:8]}…)")
-        # Clear form by re‑running
-        st.rerun()
-
-# ---------------------------------------------------------------------------
-# View stored decisions
-# ---------------------------------------------------------------------------
-st.subheader("🗂️ Your Decisions")
-records = store.list_all()
-if not records:
-    st.info("No decisions captured yet. Use the sidebar form to add one.")
-else:
-    # Show a summary table
-    for i, rec in enumerate(records, 1):
-        with st.expander(f"Decision {i}: {rec.choice[:60]}…"):
-            st.write(f"**Timestamp:** {rec.timestamp}")
-            st.write(f"**Values ranked:** {rec.values_ranked}")
-            st.write(f"**Alternatives:** {len(rec.alternatives)} options")
-            st.write(f"**Tags:** {rec.tags}")
-            if st.button(f"Use this decision for a what‑if query", key=f"use_{rec.id}"):
-                st.session_state["selected_record_id"] = rec.id
-                st.query_params = {"whatif": ""}  # reset
-
-    # Select a record for querying
-    record_ids = [rec.id for rec in records]
-    selected_id = st.selectbox(
-        "Select a decision to query:",
-        options=record_ids,
-        format_func=lambda x: next((rec.choice[:40] + "…" for rec in records if rec.id == x), "Unknown"),
-        index=record_ids.index(st.session_state.get("selected_record_id", record_ids[-1])) if st.session_state.get("selected_record_id") in record_ids else len(record_ids) - 1,
-    )
-    st.session_state["selected_record_id"] = selected_id
-
-    selected_record = next(rec for rec in records if rec.id == selected_id)
-
-    # ---------------------------------------------------------------------------
-    # What‑if query form
-    # ---------------------------------------------------------------------------
-    st.subheader("🔮 Ask a What‑If Question")
-    st.write("Type a natural‑language question about the decision you selected above.")
-    with st.form("what_if_form"):
-        question = st.text_area(
-            "Your question",
-            placeholder="e.g. If I had chosen the government job, where would I be living today?",
-            height=120,
-        )
-        submit_query = st.form_submit_button("Generate Timeline")
-
-    alt_name = None
-
-    if submit_query and question:
-        with st.spinner("Consulting the simulation engine..."):
-            # Extract alternate name from question (very simple heuristic)
-            # We'll just use the first alternative name from the record if the question mentions "the other option"
-            alt_name = None
-            # Check if question contains "Job A" / "Job B" etc.
-            import re
-            names_in_question = re.findall(r"\bJob\s+[A-Z]\b", question)
-            if names_in_question:
-                # Use the first mentioned name as alternate
-                alt_name = names_in_question[0]
-            else:
-                # Fallback: use the first alternative's name
-                if selected_record.alternatives:
-                    alt_name = selected_record.alternatives[0]["name"]
-
-            narrative = simulate_alternative(selected_record, alt_name or "the other option")
-
-        if narrative:
-            st.success("✅ Here's your alternate‑timeline narrative:")
-            st.markdown(narrative)
+        options = [parse_alternative(a) for a in lines(alts)]
+        if not (choice.strip() and options and chosen.strip() and lines(values)):
+            st.error("Please fill in the decision, the options, your choice and your values.")
         else:
-            st.error("❌ Failed to generate narrative. Check the API key/quota.")
+            record = store.add(DecisionRecord(
+                choice=choice.strip(), chosen=chosen.strip(), values_ranked=lines(values),
+                alternatives=options, reasoning=reasoning.strip(),
+                tags=[t.strip() for t in tags.split(",") if t.strip()],
+            ))
+            store.save_commitment(engine.commit(record, conviction, anchor, lines(tripwires), int(cooling)))
+            st.success(f"Committed. You chose {record.chosen}, at {conviction}/10.")
 
-    # Optional: show the raw prompt sent to the LLM (expandable)
-    with st.expander("View the prompt sent to Gemini"):
-        # Build prompt similar to simulate module
-        prompt = SIMULATION_PROMPT.format(
-            choice=selected_record.choice,
-            values_ranked=json.dumps(selected_record.values_ranked, ensure_ascii=False),
-            alternatives=json.dumps(selected_record.alternatives, ensure_ascii=False),
-            alternate_name=alt_name or "the other option",
-        )
-        st.code(prompt, language="text")
+records = store.list_all()
+committed = [(r, store.get_commitment(r.id)) for r in records]
+committed = [(r, c) for r, c in committed if c]
+
+
+def pick(label: str, key: str):
+    if not committed:
+        st.info("No committed decisions yet. Start in the Decide tab.")
+        return None, None
+    idx = st.selectbox(label, range(len(committed)), key=key,
+                       format_func=lambda i: f"{committed[i][0].chosen or committed[i][0].choice[:50]}"
+                                             f" ({committed[i][1].status})")
+    return committed[idx]
 
 
 # ---------------------------------------------------------------------------
-# Helper: simple web‑search placeholder (replace with real API later)
+with tab_hold:
+    record, c = pick("Decision", "hold_pick")
+    if record:
+        st.info(engine.reminder(c, record))
+        if c.status != "committed":
+            st.warning("This decision was reversed. History is kept below.")
+        else:
+            show_verdict(engine.evaluate(c, record))
+
+            st.subheader("Having a doubt? Log it here instead of acting on it.")
+            with st.form("doubt", clear_on_submit=True):
+                text = st.text_area("What is bothering you?")
+                new = st.checkbox("This is information I did not have when I decided")
+                value = st.selectbox("Which value does it touch?", ["(none)"] + record.values_ranked)
+                severity = st.slider("How serious is it?", 1, 5, 3)
+                col1, col2 = st.columns(2)
+                energy = col1.slider("Your energy right now", 1, 10, 6)
+                stress = col2.slider("Your stress right now", 1, 10, 4)
+                if st.form_submit_button("Log doubt") and text.strip():
+                    engine.log_doubt(c, Doubt(text=text.strip(), is_new_information=new,
+                                              affects_value="" if value == "(none)" else value,
+                                              severity=severity, energy_level=energy, stress_level=stress))
+                    store.save_commitment(c)
+                    st.rerun()
+
+            active = [t for t in c.tripwires if not t.triggered]
+            if active:
+                st.subheader("Did one of your conditions actually happen?")
+                with st.form("trip"):
+                    which = st.selectbox("Tripwire", range(len(c.tripwires)),
+                                         format_func=lambda i: c.tripwires[i].condition)
+                    evidence = st.text_input("What happened?")
+                    if st.form_submit_button("It happened"):
+                        engine.trigger_tripwire(c, str(which + 1), evidence)
+                        store.save_commitment(c)
+                        st.rerun()
+
+            st.subheader("Review")
+            col1, col2 = st.columns(2)
+            with col1, st.form("reaffirm"):
+                note = st.text_input("Why you are choosing this again")
+                if st.form_submit_button("Reaffirm"):
+                    engine.reaffirm(c, note)
+                    store.save_commitment(c)
+                    st.rerun()
+            with col2, st.form("reverse"):
+                reason = st.text_area("Why you are changing course")
+                if st.form_submit_button("Reverse decision"):
+                    try:
+                        engine.reverse(c, record, reason)
+                        store.save_commitment(c)
+                        st.rerun()
+                    except engine.CommitmentLocked:
+                        st.error("Locked. The engine is holding this decision; see the verdict above.")
+                    except ValueError as err:
+                        st.error(str(err))
+
+        with st.expander("History"):
+            for e in reversed(c.history):
+                st.write(f"`{e.timestamp[:16]}` **{e.kind}** {e.detail}")
+
 # ---------------------------------------------------------------------------
-def search_alternatives(keywords: str) -> str:
-    """Placeholder for a web‑search based alternative‑generation function.
-
-    In a full implementation you would call a search API (e.g. Google Custom Search,
-    Bing Search, or a public scraper) with *keywords* and return a concise summary
-    of the most relevant alternatives, including a one‑sentence description and a
-    bullet list of pros/cons if available.
-
-    For now the function returns a friendly message telling the user what would
-    happen next.
-    """
-    return (
-        "🔎 Web‑search integration not yet configured. \n\n"
-        "To enable this feature you can:\n"
-        "1. Obtain a Google Custom Search JSON API key and CX ID.\n"
-        "2. Replace the function body with a call to the API, e.g.\n"
-        "   `response = requests.get('https://www.googleapis.com/customsearch/v1', "
-        "params={'key': API_KEY, 'cx': CX_ID, 'q': keywords})`. \n"
-        "3. Parse the `items` array and format the results as markdown.\n\n"
-        f"Searched keywords: *{keywords}*. \n"
-        "When the API is wired, the result will appear here automatically."
-    )
+with tab_explore:
+    record, c = pick("Decision", "explore_pick")
+    if record:
+        others = [a["name"] for a in record.unchosen()] or record.alternative_names()
+        if others:
+            alt = st.selectbox("The road not taken", others)
+            if st.button("Show me that timeline"):
+                with st.spinner("Simulating..."):
+                    st.markdown(llm.what_if(record, alt))
+        doubt_text = st.text_input("Argue with your past self: what is your doubt?")
+        if st.button("Hear the other side") and doubt_text:
+            with st.spinner("Asking your past self..."):
+                st.markdown(llm.defend_past_self(record, doubt_text))
+        if st.button("Plan to make this decision pay off"):
+            with st.spinner("Planning..."):
+                st.markdown(llm.goal_plan(record))

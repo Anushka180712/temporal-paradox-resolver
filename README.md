@@ -1,559 +1,302 @@
-# Temporal Paradox Resolver — Decision‑Archival Agent
+# ⏳ Temporal Paradox Resolver
 
-**Your personal "decision time capsule."** Archive the full context of major life choices today, and query them years later to see plausible alternate timelines — complete with gains, losses, and learned patterns.
+**Decide once, calmly. Then hold the line, unless something real changes.**
 
----
+Every big decision creates a quiet paradox. There are two versions of you:
 
-## 🤔 The Problem
+- **Your past self**, who decided with a clear head, weighed the options, and knew exactly why.
+- **Your present self**, who is tired at 1 a.m., scrolling through someone else's life, and suddenly sure it was all a mistake.
 
-Humans are notoriously bad at remembering *why* we made past decisions. Within 2 years, most people forget:
+Both are you. Only one of them should be steering. The Temporal Paradox Resolver settles that argument. It archives the full context of a decision at the moment you make it, then puts a **commitment lock** on it. Doubts get *logged and weighed* instead of acted on. The lock opens only when the case for changing course is genuinely strong: new information, about something you care about, felt with a clear mind, and still true a week later. Or when a condition your past self wrote down in advance actually happens.
 
-- The specific values they ranked
-- The alternatives they weighed
-- The trade‑offs they considered
-- The emotional state and timing of the choice
-
-The result? We re‑argue the same trade‑offs, carry unresolved regret, and repeat mistakes — all while *confident* we already know the answer.
-
-This agent solves that by creating a permanent, structured archive of every major decision, and using LLMs to reconstruct plausible "what‑if" timelines on demand.
+No mood swings. No flip-flopping. No changing your mind because of one bad night. And no stubbornness either, because when the situation really does change, the engine says so plainly.
 
 ---
 
-## ✨ Key Features
+## Table of contents
 
-| Feature | What It Does |
+- [Why this exists](#why-this-exists)
+- [How the commitment lock works](#how-the-commitment-lock-works)
+- [Quick start](#quick-start)
+- [A full example](#a-full-example)
+- [The web app](#the-web-app)
+- [Command reference](#command-reference)
+- [Under the hood: how doubts are weighed](#under-the-hood-how-doubts-are-weighed)
+- [Optional AI features](#optional-ai-features)
+- [Project layout](#project-layout)
+- [Running the tests](#running-the-tests)
+- [Ideas for what comes next](#ideas-for-what-comes-next)
+
+---
+
+## Why this exists
+
+People rarely regret decisions because they were made badly. They regret them because, months later, they can no longer remember *why* they made them. The reasons fade, the trade-offs blur, and what is left is the cost of the path you took next to the imagined perfection of the one you did not.
+
+That leads to three predictable traps:
+
+1. **Re-arguing settled trade-offs.** You knew the startup paid less. You chose it anyway, for the learning. "But the bank pays more!" is not news.
+2. **Deciding from a bad state.** Exhaustion and stress make every choice look worse. A doubt felt at 2/10 energy is mostly about the 2/10 energy.
+3. **Flip-flopping.** You change course, then change back, and lose the benefits of both paths, because most good decisions only pay off if you stay with them long enough.
+
+The resolver is built around a few ideas from decision research: write down your reasoning at the time, set **kill criteria** (here called *tripwires*) in advance, add a **cooling-off period**, and use **hysteresis** so that the bar to switch back is higher than the bar to switch in the first place.
+
+---
+
+## How the commitment lock works
+
+When you make a decision, you tell the resolver:
+
+| You record | Why it matters |
 |---|---|
-| **Decision Capture** | Prompt you at the moment of a big choice: exact wording, values ranked, alternatives considered (with pros/cons), time‑of‑day, context notes, tags. Records are stored as immutable JSON in SQLite (or PostgreSQL). |
-| **Structured Archive** | Every decision gets a UUID, timestamp, values, alternatives, context, notes, and tags. Data lives locally by default; optionally cloud‑hosted. |
-| **Alternate‑Timeline Simulation** | Ask natural‑language "what‑if" queries ("If I’d taken Job B instead of Job A, where would I be today?") and get a synthesized, data‑backed narrative from the LLM. |
-| **Pros‑Cons Generator** | After a decision is captured, the LLM automatically creates 3 plausible pros and 3 cons for the alternative *not* chosen, grounded in your ranked values and context. |
-| **Conclusion Prompt** | The LLM writes a brief 1‑2‑sentence personal recommendation based on your values and the simulated gains/losses, helping you reflect and reach a conclusion. |
-| **Goal‑Plan Generator** | Translate your top‑ranked value (e.g., "career growth") into a concrete 6‑month action plan with 3 monthly milestones, turning abstract priorities into trackable steps. |
-| **Motivational Tagline** | A short uplifting tagline is prepended to every simulation narrative (e.g., "💡 Remember: every choice teaches you more about what you truly value."). |
-| **Pattern Learning** | Over time, the agent surfaces patterns: which value prioritizations led to satisfaction, which to burnout, etc. |
-| **Privacy‑First** | All data lives locally (or your chosen cloud); no external tracking unless you opt‑in. |
-| **Export & Backup** | JSON/CSV export, optional encrypted backup. |
-| **Web UI (Streamlit)** | Beautiful, responsive web interface for capturing decisions, viewing your history, and running what‑if queries without touching the CLI. |
-| **CLI** | Full command‑line interface for capturing decisions and running simulations programmatically. |
+| **The decision and every option**, with pros and cons | So future-you can see the whole picture you saw. |
+| **Your ranked values** | Doubts about your #1 value weigh much more than doubts about your #5. |
+| **Your reasoning** | In your own words, quoted back to you when you waver. |
+| **Conviction (1-10)** | The surer you were, the more evidence it takes to unsettle you. |
+| **A note to your future self** | Read first, every time you log a doubt. |
+| **Tripwires** | "I will reconsider only if..." conditions, written while calm. |
+| **A cooling period** | Days during which ordinary doubts cannot unlock the decision. |
 
----
+From then on, the engine gives one of three verdicts:
 
-## 🏗️ Architecture Overview
-
-```text
-┌─────────────────────┐     ┌─────────────────────┐
-│   Decision Capture   │──►│   Storage Layer      │
-│ (CLI or Web Form)    │     │ (SQLite / Postgres)  │
-└─────────────────────┘     └─────────────────────┘
-           │                          │
-           ▼                          ▼
-      ┌─────────────────┐      ┌─────────────────┐
-      │   Simulation    │◄────▶│   Query Interface│
-      │   Engine (LLM)  │      │ (Natural‑lang)  │
-      └─────────────────┘      └─────────────────┘
-```
-
-### Data Flow
-
-1. **Decision Capture** → user fills form → `DecisionRecord` JSON → stored in SQLite.
-2. **Simulation Engine** → LLM prompt (`simulate_alternative`) → narrative string.
-3. **Additional Feature Hooks** → `generate_pros_cons`, `generate_conclusion`, `generate_goal_plan`, `add_motivational_tagline` all receive the same `DecisionRecord` and optional narrative, call the LLM with specialized prompts, and return structured text.
-4. **Query Interface** → natural‑language parser (`query.py`) decides which feature to invoke, fetches the record, and returns the result.
-
-### Technology Stack
-
-| Layer | Recommendation |
+| Verdict | Meaning |
 |---|---|
-| **Language** | Python 3.10+ |
-| **CLI** | Typer‑based (`main.py`) |
-| **Web UI** | Streamlit (`app.py`) — optional, `pip install streamlit` |
-| **Database** | SQLite for MVP → PostgreSQL for multi‑user scale |
-| **LLM API** | Google Gemini `gemini-3.5-flash` (primary) |
-| **Packaging` | `requirements.txt`, optional `Dockerfile` |
-| **Testing** | `pytest` + simple integration tests |
+| 🟢 **HOLD** | Stay the course. Your past self had good reasons. |
+| 🟠 **WATCH** | Still hold, but evidence is building. Keep logging honestly. |
+| 🔴 **RECONSIDER** | A real reason to review exists. Now, and only now, you may reaffirm or reverse. |
+
+The rules that make it firm:
+
+- 🔐 **You cannot reverse a decision unless the verdict is RECONSIDER.** The command refuses and shows you why.
+- 🧠 **Old news barely counts.** A doubt about something you already knew when you decided counts at 25%.
+- 😴 **Your state of mind is factored in.** Doubts logged while exhausted (energy ≤ 3) or overwhelmed (stress ≥ 8) count half.
+- 📅 **One bad day is never enough.** You need at least two doubts that bring new information, spread over at least seven days.
+- ❄️ **The cooling period protects early decisions.** Inside it, only a tripwire or twice the usual evidence can break the lock.
+- 🎯 **Tripwires always win.** If a condition you wrote in advance happens, the engine says RECONSIDER at once. You trusted your calm self to define what counts.
+- 🔁 **Reaffirming makes you stronger.** Choosing the decision again clears the doubts you have now answered and raises the bar by 25%. The same doubts cannot flip you back next month.
+- ✍️ **Reversing needs a written reason.** At least 40 characters, stored forever, so your next future self knows why you changed.
+
+Every verdict comes with line-by-line reasons and a breakdown of how each doubt was weighed. The engine is plain, deterministic Python: no AI is involved in the decision to hold or release, so the same history always gives the same answer.
 
 ---
 
-## 📂 Repo Structure — What Each File Is For
+## Quick start
 
-```
-temporal-paradox-resolver/
-├─ __init__.py           # Package marker — makes this a Python package
-├─ main.py               # CLI entry point — runs the interactive capture flow
-├─ capture.py            # Interactive CLI prompt for decision capture (step‑by‑step)
-├─ store.py              # SQLite wrapper — add / get / list records
-├─ models.py             # DecisionRecord dataclass + serialization (to/from dict)
-├─ simulate.py           # LLM simulation + pros‑cons / conclusion / goal‑plan / tagline
-├─ query.py              # Natural‑language question parser & orchestrator
-├─ app.py                # Streamlit web UI (capture + queries + new features)
-├─ requirements.txt      # Python dependencies (google-genai, streamlit, etc.)
-├─ .env.example          # Template for GEMINI_API_KEY
-├─ README.md             # This file — comprehensive guide
-└─ ARCHITECTURE.md       # Detailed architecture note (overview + component desciptions)
-```
-
-### Quick File Reference
-
-| File | Purpose |
-|---|---|
-| `__init__.py` | Makes `temporal_paradox_resolver` a importable Python package. |
-| `main.py` | Entry point for CLI: `python main.py` starts the capture workflow. |
-| `capture.py` | Interactive CLI prompt that walks you through capturing a decision. |
-| `store.py` | SQLite backend — persists decisions immutably, provides `add()`, `get()`, `list_all()`. |
-| `models.py` | `DecisionRecord` dataclass — defines the schema of a captured decision. |
-| `simulate.py` | Core LLM engine: `simulate_alternative()`, `generate_pros_cons()`, `generate_conclusion()`, `generate_goal_plan()`, `add_motivational_tagline()`. |
-| `query.py` | Parses natural‑language "what‑if" questions, extracts record IDs and alternate names, delegates to the simulation engine. |
-| `app.py` | Streamlit web UI — sidebar form for capture, decision list, what‑if query box, and feature buttons. |
-| `requirements.txt` | pip‑installable dependencies. |
-| `.env.example` | Copy to `.env` and add your `GEMINI_API_KEY=...`. |
-| `ARCHITECTURE.md` | Detailed architectural diagrams and component descriptions (for developers). |
-| `README.md` | This guide — what the project does, how to use it, and what makes it intriguing. |
-
----
-
-## 🚀 Getting Started — Quick & Easy
-
-### 1. Clone the repo
+Requires Python 3.10 or newer. The core uses only the standard library.
 
 ```bash
-git clone https://github.com/your-handle/temporal-paradox-resolver.git
+git clone https://github.com/Anushka180712/temporal-paradox-resolver.git
 cd temporal-paradox-resolver
-```
-
-### 2. Create a virtual environment
-
-```bash
 python -m venv .venv
-source .venv/bin/activate     # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[ui,dev]"         # add ,llm for the optional Gemini features
 ```
 
-### 3. Install dependencies
+That installs a `tpr` command. Capture your first decision interactively:
 
 ```bash
-pip install -r requirements.txt
+tpr capture
 ```
 
-**`requirements.txt` contents:**
-
-```
-# Core dependencies
-google-genai>=0.8.0
-streamlit>=1.35.0   # optional, for web UI
-
-# Optional, if you want easier .env handling
-python-dotenv>=1.0.0
-```
-
-### 4. Set up your Gemini API key
-
-Copy the example env file and add your key:
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` (or export in your shell):
-
-```bash
-export GEMINI_API_KEY='YOUR_GEMINI_API_KEY_HERE'
-```
-
-You can also place the line `GEMINI_API_KEY=YOUR_KEY_HERE` directly in `.env`; the code reads `os.getenv("GEMINI_API_KEY")`.
-
-### 5. Run the agent
-
-#### CLI — capture a decision
-
-```bash
-python main.py
-```
-
-You'll be prompted step‑by‑step for choice description, values, alternatives, context, notes, and tags. The record is saved to `my_decisions.db` (SQLite) in the project root.
-
-#### CLI — simulate an alternate timeline
-
-After a decision is captured, you can ask the LLM for a narrative:
-
-```bash
-python3 -m temporal_paradox_resolver.simulate <record-id> "Alternative Name"
-```
-
-e.g.:
-
-```bash
-python3 -m temporal_paradox_resolver.simulate 4ad4b13d-78c1-4144-971c-adfe3e74b792 "Stay in current role"
-```
-
-The script will output the ~150‑word "what‑if" narrative.
-
-#### Streamlit Web UI (optional, recommended for first‑time users)
+Or run the web app:
 
 ```bash
 streamlit run app.py
 ```
 
-Open `http://localhost:8501` in your browser. The UI features:
-
-- **Sidebar form** to capture a new decision.
-- **Decision list** view — click any decision to query it.
-- **What‑if query box** — type a natural‑language question (e.g., "If I had chosen the other option, where would I be today?").
-- **Three feature buttons** per decision:
-  - **Generate Pros‑Cons** – LLM creates 3 pros and 3 cons for the alternative not chosen.
-  - **Get Conclusion** – LLM gives a 1‑2‑sentence personal recommendation.
-  - **Create Goal Plan** – LLM produces a 6‑month action plan with 3 monthly milestones based on your top‑ranked value.
-- **Motivational tagline** is automatically shown at the top of every narrative.
+You can also skip installing and use `python -m temporal_paradox_resolver <command>`.
 
 ---
 
-## 🎛️ Using the Features — Step‑by‑Step
+## A full example
 
-### 1. Capture a Decision
-
-**CLI:**
+**1. Decide and lock it in.**
 
 ```bash
-python main.py
+tpr capture \
+  --choice "Join the early-stage startup instead of the bank" \
+  --chosen "Startup" \
+  --values "growth, autonomy, money" \
+  --alt "Startup | fast learning; real ownership | lower pay; risk" \
+  --alt "Bank | higher salary; stability | slow growth; narrow role" \
+  --reasoning "I learn fastest where I own real problems, and I can afford the risk now." \
+  --conviction 8 \
+  --anchor "You knew the pay was lower. You chose growth on purpose." \
+  --tripwire "The company runs out of runway" \
+  --tripwire "I have learned nothing new for three months straight" \
+  --cooling-days 60
 ```
 
-Follow the prompts: choice, values (one per line), alternatives (name, pros, cons), context (time of day, energy level, stressors), notes, tags.
+```
+Saved decision 3f9c1a2b.
+Committed at 8/10 with 2 tripwire(s) and a 60-day cooling period.
+```
 
-**Web UI:**
-
-Go to the sidebar form, fill in the fields, and click **Save Decision**. A UUID is generated and stored in SQLite.
-
-### 2. Generate an Alternate‑Timeline Narrative
-
-**CLI:**
+**2. Two weeks in, a friend posts their bank bonus. You feel it.**
 
 ```bash
-python3 -m temporal_paradox_resolver.simulate <record-id> "Alternative Name"
+tpr doubt 3f9c "My friend's bonus at the bank is huge" --value money --energy 3 --stress 7
 ```
 
-**Web UI:**
+```
+Before anything else, read what your past self wrote:
 
-- Select a decision from the list.
-- Type your question in the "What‑if query" box (or use the default "the other option").
-- Click **Generate Timeline**.
-- The narrative appears below, with a motivational tagline prepended.
+You chose: Startup
+You have held this for 14 day(s).
+What mattered most, in order: growth, autonomy, money
+Why you chose it: I learn fastest where I own real problems, and I can afford the risk now.
+How sure you were: 8/10
+Your note to yourself: "You knew the pay was lower. You chose growth on purpose."
+You agreed to reconsider only if: The company runs out of runway; I have learned nothing new for three months straight
 
-### 3. Generate Pros‑Cons for the Alternative Not Chosen
+Doubt logged. It has been weighed, not acted on.
 
-**CLI:**
-
-```python
-from temporal_paradox_resolver.simulate import generate_pros_cons
-from temporal_paradox_resolver.store import DecisionStore
-
-store = DecisionStore(db_path="my_decisions.db")
-record = store.get("<your-uuid>")
-pros_cons = generate_pros_cons(record, "the other option")
-if pros_cons:
-    print(pros_cons)
-store.close()
+Verdict: HOLD   [....................] 0.1 / 15.6
+  - Evidence against the decision: 0.1 of the 15.6 needed (conviction 8/10).
+  - The evidence has not reached the bar.
+  - Only 0 doubt(s) bring new information; at least 2 are needed. Re-arguing known trade-offs does not count.
+  ...
+  - Hold the decision. Your past self had good reasons.
 ```
 
-**Output format:**
+The doubt scored almost nothing: you already knew the pay was lower, money is your #3 value, and you were exhausted.
 
-```
-Pros:
-- <pro 1>
-- <pro 2>
-- <pro 3>
+**3. Try to quit anyway.**
 
-Cons:
-- <con 1>
-- <con 2>
-- <con 3>
+```bash
+tpr reverse 3f9c --reason "The bank just looks so much better right now honestly."
 ```
 
-**Web UI:**
-
-- After viewing a narrative, click the **Generate Pros‑Cons** button.
-- The result appears in an expandable section.
-
-### 4. Get a Personal Conclusion
-
-**CLI:**
-
-```python
-from temporal_paradox_resolver.simulate import generate_conclusion
-
-narrative = """If you had chosen Job B, you would today be working remotely…
-* Primary Gain: …
-* Primary Trade‑off: …
-* Value Alignment: …
-"""
-rec = store.get("<uuid>")
-rec_conclusion = generate_conclusion(rec, narrative)
-if rec_conclusion:
-    print("Conclusion:", rec_conclusion)
+```
+Not reversed. The engine is holding this decision.
 ```
 
-**Output:** a brief 1‑2‑sentence recommendation, e.g.:
+**4. Something real happens.**
 
-> "Given that financial security is your top value, the stable salary of Job A may provide longer‑term peace of mind, but if career growth is equally important, mixing a side‑project with the new role could balance both."
-
-**Web UI:**
-
-- Click **Get Conclusion** after a narrative is generated.
-
-### 5. Create a 6‑Month Goal Plan
-
-**CLI:**
-
-```python
-from temporal_paradox_resolver.simulate import generate_goal_plan
-
-rec = store.get("<uuid>")
-plan = generate_goal_plan(rec, top_value="career growth", horizon_months=6, num_milestones=3)
-if plan:
-    print(plan)
+```bash
+tpr trip 3f9c 1 --evidence "Funding round collapsed; six weeks of runway left"
 ```
 
-**Output format:**
-
 ```
-Month 1: Enroll in an online course on data structures (5 hours/week).
-Month 2: Complete a small personal project using the new skills (10 hours total).
-Month 3: Update your résumé and apply for one internal transfer opportunity.
+Tripwire triggered: The company runs out of runway
+Verdict: RECONSIDER
+  - A tripwire you set in advance has been triggered: 'The company runs out of runway'.
 ```
 
-**Web UI:**
+Now you review. Either **reaffirm** (`tpr reaffirm 3f9c --note "Founders found a bridge loan; staying"`), which makes the lock stronger, or **reverse** with a real reason, and capture your next decision.
 
-- Click **Create Goal Plan** after a narrative is generated.
-
-### 6. View the Motivational Tagline
-
-Taglines are automatically prepended to every narrative. If you want to see it separately:
-
-```python
-from temporal_paradox_resolver.simulate import add_motivational_tagline, simulate_alternative
-
-narrative = simulate_alternative(rec, "Job B (remote, lower salary)")
-tagged = add_motivational_tagline(narrative)
-print(tagged)
-```
-
-**Output:**
-
-```
-💡 Remember: every choice teaches you more about what you truly value.
-
-If you had chosen Job B, you would today be working remotely from home…
-```
-
-**Web UI:**
-
-- The tagline appears automatically at the top of every narrative.
+Use `tpr check 3f9c` at any point to see the full verdict with every doubt's weight, and `tpr show 3f9c` for the record and its complete history.
 
 ---
 
-## 💡 Sample Queries & Use Cases
+## The web app
 
-| Query Type | Example | What You'll Get |
-|---|---|---|
-| **Alternate timeline** | "If I had taken the remote job instead of the office job, where would I be living today?" | A 150‑word narrative describing likely location, job, gains, losses, and value alignment. |
-| **Pros‑cons** | "What are the pros and cons of the path I didn't choose?" | Formatted block with 3 pros and 3 cons, grounded in your values. |
-| **Conclusion** | "Given my values and the alternate outcome, what should I take away?" | A 1‑2‑sentence uplifting recommendation. |
-| **Goal plan** | "What should I do in the next 6 months based on my top value?" | A 3‑month milestone plan (by default 6 months, 3 milestones). |
-| **Pattern query** | "Which decisions where I ranked 'financial security' highest turned out well?" | (Future feature — the agent can aggregate your decision history.) |
+`streamlit run app.py` opens three tabs:
 
-### Example: Full CLI Session
+- **📝 Decide**: capture the decision, options, values, conviction, note to self, tripwires and cooling period in one form.
+- **🔒 Hold the line**: your past self's reminder at the top, the live verdict with a progress bar toward the bar, a form to log doubts (with energy and stress sliders), tripwire triggers, and the reaffirm / reverse review. Reverse stays locked until the verdict allows it.
+- **🔮 Explore**: simulate the road not taken, argue with your past self, and get a plan to make the decision pay off.
 
-```bash
-$ python main.py
-
-=== Capture a New Decision ===
-
-Describe the decision you're making (your exact words): I'm deciding between Job A (high salary, long commute) and Job B (lower salary, remote).
-
-Values you're ranking (type one per line, press Enter twice when done):
-> financial security
-> work-life balance
-> location
-
-Alternatives considered (for each: name, then pros, then cons, each section terminated by an empty line):
-  Alternative name (or leave blank to finish): Job A
-    Pros (one per line, empty line when done):
-      high salary
-    Cons (one per line, empty line when done):
-      long commute
-
-  Alternative name (or leave blank to finish): Job B
-    Pros (one per line, empty line when done):
-      remote
-    Cons (one per line, empty line when done):
-      lower salary
-
-Context (press Enter after each, or type 'skip' to move on):
-  Time of day (morning/afternoon/evening): evening
-  Energy level (1-10): 6
-  Stressors (comma-separated, or skip): burnout at current role
-
-  Any additional notes (free‑form): Feeling burnt out and undervalued.
-
-  Tags (comma-separated, e.g., career,2024,major): career,2024,major
-
-✅ Decision captured and saved (ID: 4ad4b13d-78c1-4144-971c-adfe3e74b792…)
-
-$ python3 -m temporal_paradox_resolver.simulate 4ad4b13d-78c1-4144-971c-adfe3e74b792 "Job B (remote, lower salary)"
-
-=== Narrative ===
-
-You likely would have kept your current city, avoided the daily 2‑hour commute, and had more evenings free. However, you would have had about $12k less annual income, which may have slowed your apartment‑down‑payment progress. Since 'financial security' was your top‑ranked value, you might have felt a moderate trade‑off: more time vs. less margin.
-
-$ python3 -m temporal_paradox_resolver.simulate 4ad4b13d-78c1-4144-971c-adfe3e74b792 "Job B (remote, lower salary)"
-
-Pros:
-- More free time in the evenings
-- No daily commute stress
-- Greater flexibility to relocate
-
-Cons:
-- ~$12k less annual income
-- Slower progress on apartment down‑payment
-- Potential career ceiling in the new role
-
-$ python3 -c "
-from temporal_paradox_resolver.simulate import generate_conclusion
-narrative = '''You likely would have kept your current city...'''
-from temporal_paradox_resolver.store import DecisionStore
-store = DecisionStore(db_path='my_decisions.db')
-rec = store.get('4ad4b13d-78c1-4144-971c-adfe3e74b792')
-print('Conclusion:', generate_conclusion(rec, narrative))
-"
-Conclusion: Given that financial security is your top value, the stable salary of Job A may provide longer‑term peace of mind, but if career growth is equally important, mixing a side‑project with the new role could balance both.
-```
+Data is stored in `decisions.db` (override with `TPR_DB`).
 
 ---
 
-## 🌟 What Makes This Intriguing?
+## Command reference
 
-| Aspect | Why It's Cool |
+| Command | What it does |
 |---|---|
-| **Personalized LLM simulations** | The narratives are grounded in *your* actual data (your values, your alternatives), not generic AI advice. |
-| **Decision‑time capsule** | Preserve the *why* behind your choices forever — rediscover them years later with fresh eyes. |
-| **Multiple “what‑if” angles** | One decision → pros‑cons, conclusion, goal plan, and full narrative — all from the same data. |
-| **Privacy‑first design** | Everything stays on your machine by default. No data leaves your control unless you explicitly enable API calls. |
-| **CLI + Web UI** | Choose your interaction style: quick CLI commands or a beautiful, responsive Streamlit interface. |
-| **Extensible architecture** | Swap SQLite for PostgreSQL, Gemini for Claude or local Llama — the modular design lets you grow into whatever you need. |
-| **Pattern learning** | Over time, the agent can surface insights like "When I rank creativity #1, I'm satisfied 80% of the time after 6 months." (Roadmap.) |
-| **Export & backup** | Pull your full decision history as JSON/CSV and archive it however you like. |
-| **Goal‑oriented** | Turn abstract values into concrete, trackable action plans — not just reflection, but forward motion. |
+| `tpr capture` | Record a decision and lock it. Interactive with no flags, scriptable with `--choice`, `--chosen`, `--values`, `--alt`, `--reasoning`, `--conviction`, `--anchor`, `--tripwire`, `--cooling-days`, `--no-commit`. |
+| `tpr commit ID` | Lock a decision you saved with `--no-commit`. |
+| `tpr list` | All decisions with their current verdict. |
+| `tpr show ID` | Full record, reminder, history and verdict. |
+| `tpr doubt ID "text"` | Log a doubt. Flags: `--new` (information you did not have), `--value`, `--severity 1-5`, `--energy 1-10`, `--stress 1-10`. |
+| `tpr check ID` | Verdict with a breakdown of every doubt's weight. |
+| `tpr trip ID N` | Mark tripwire number `N` as triggered, with `--evidence`. |
+| `tpr reaffirm ID` | Choose the decision again. Clears answered doubts, raises the bar. |
+| `tpr reverse ID --reason "..."` | Change course. Refused unless the verdict is RECONSIDER. |
+| `tpr whatif ID "Option"` | Narrative of the timeline where you chose another option. |
+| `tpr defend ID "doubt"` | Your past self's strongest honest case against a doubt. |
+| `tpr plan ID` | Milestones that turn your top value into progress on the chosen path. |
+| `tpr export` | Everything as JSON, for backup. |
+
+`ID` can be the first few characters of a decision's id. Use `--db path.db` (or `TPR_DB`) to pick a database.
 
 ---
 
-## 🛣️ Roadmap (Next Steps)
+## Under the hood: how doubts are weighed
 
-1. **MVP** — decision capture + SQLite storage + CLI query (already functional).
-2. **LLM Integration** — Google Gemini `gemini-3.5-flash` for simulation, pros‑cons, conclusion, goal‑plan.
-3. **Web UI** — Streamlit interface with click‑through capture and queries (released).
-4. **Pattern Analytics** — aggregate insights across your decision history (e.g., "When I rank financial security #1, I'm satisfied 80% of the time after 6 months").
-5. **Export & Backup** — encrypted JSON/CSV export, optional iCloud/Google Drive sync.
-6. **Multi‑user support** — namespaces per user in a shared database.
-7. **Calendar/Contacts integration** — automatically pull in contextual data to enrich simulations.
-8. **“Decision‑coach” mode** — after a new decision is captured, the agent suggests a follow‑up check‑in date (e.g., "6 months from now, I'll ask how you feel about this choice").
-9. **Export to Notion/Roam** — embed decision archives into your personal knowledge graph.
+Each doubt starts at its **severity** (1-5) and is multiplied by:
 
----
-
-## 🤝 Contributing
-
-Found a bug or have an idea? Open an issue or submit a PR. This project is meant to be *personal* first — contributions should respect user privacy and data ownership.
-
-*Built with ❤️ for anyone who's ever wondered "what if?" and wanted an answer grounded in their own data, not just generic advice.*
-
----
-
-## 📬 Environment Setup Summary
-
-| Step | Command / Action |
+| Factor | Multiplier |
 |---|---|
-| Clone | `git clone … && cd temporal-paradox-resolver` |
-| Venv | `python -m venv .venv && source .venv/bin/activate` |
-| Install deps | `pip install -r requirements.txt` |
-| Set API key | `export GEMINI_API_KEY='YOUR_KEY'`  or add to `.env` |
-| Run CLI capture | `python main.py` |
-| Run Streamlit UI | `streamlit run app.py` |
-| Use Python features | import from `temporal_paradox_resolver.simulate` as shown above |
+| Brings new information | × 1.0 |
+| Already known when you decided | × 0.25 |
+| Touches your value ranked *r* of *n* | × (n − r + 1) / n, so your top value is × 1.0 |
+| Not tied to a ranked value | × 0.5 |
+| Logged while exhausted (energy ≤ 3) or overwhelmed (stress ≥ 8) | × 0.5 |
+| Logged while strained (energy ≤ 5 or stress ≥ 6) | × 0.75 |
+| Age | halves every 60 days, so doubts that are not repeated fade |
+
+The **bar** is `6 + 1.2 × conviction`, multiplied by `1.25` for every reaffirmation. Conviction 7 means 14.4. After one reaffirmation, 18.
+
+The verdict is **RECONSIDER** when a tripwire is triggered, or when all of these hold at once:
+
+1. Total evidence ≥ the bar.
+2. At least two doubts bring new information.
+3. Those doubts span at least seven days.
+4. The cooling period is over, or the evidence is at least twice the bar.
+
+Otherwise it is **WATCH** if evidence is at least 60% of the bar, and **HOLD** below that. Every number lives in one `Policy` dataclass in `temporal_paradox_resolver/commitment.py`, so you can tune it openly instead of quietly lowering your own standards in the moment.
 
 ---
 
-## 🎉 Quick “Hello World” Python Example
+## Optional AI features
 
-```python
-import os, sys
-sys.path.insert(0, "/Users/udishasingh/Desktop/RAG/AI Agent")
-os.environ["GEMINI_API_KEY"] = "YOUR_GEMINI_API_KEY_HERE"
+Set `GEMINI_API_KEY` (see `.env.example`) and install `google-genai` to get richer text for `whatif`, `defend` and `plan`. The model defaults to `gemini-3.5-flash` and can be changed with `TPR_GEMINI_MODEL`.
 
-from temporal_paradox_resolver.store import DecisionStore
-from temporal_paradox_resolver.simulate import (
-    simulate_alternative,
-    generate_pros_cons,
-    generate_conclusion,
-    generate_goal_plan,
-    add_motivational_tagline,
-)
-from temporal_paradox_resolver.models import DecisionRecord
-import datetime as dt, uuid, json
+Without a key, all three still work, with offline answers built from your own notes. **The AI never decides whether you hold or reverse.** That stays deterministic on purpose.
 
-store = DecisionStore(db_path="/tmp/test.db")
+Never commit a real API key. Keep it in your environment or in a local `.env` file, which `.gitignore` already excludes.
 
-# 1️⃣ Capture a mock record (normally done via CLI)
-record = DecisionRecord(
-    id=str(uuid.uuid4()),
-    timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
-    choice="I am deciding between Job A (high salary, long commute) and Job B (lower salary, remote).",
-    values_ranked=["financial security", "work-life balance", "location"],
-    alternatives=[
-        {"name": "Job A", "pros": ["high salary"], "cons": ["long commute"]},
-        {"name": "Job B", "pros": ["remote"], "cons": ["lower salary"]},
-    ],
-    context={"time_of_day": "evening", "energy_level": 6, "stressors": []},
-    notes="Feeling burnt out.",
-    tags=["career", "2024"],
-)
-store.add(record)
+---
 
-# 2️⃣ Simulate alternate timeline
-narrative = simulate_alternative(record, "Job B (remote, lower salary)")
-print("=== Narrative ===")
-print(narrative)
+## Project layout
 
-# 3️⃣ Add motivational tagline
-tagged = add_motivational_tagline(narrative)
-print("\n=== Tagged ===")
-print(tagged)
-
-# 4️⃣ Generate pros‑cons for the alternative not chosen
-pros_cons = generate_pros_cons(record, "Job B (remote, lower salary)")
-print("\n=== Pros‑Cons ===")
-print(pros_cons)
-
-# 5️⃣ Generate a personal conclusion
-conclusion = generate_conclusion(record, narrative)
-print("\n=== Conclusion ===")
-print(conclusion)
-
-# 6️⃣ Generate a 6‑month goal plan for the top value
-goal_plan = generate_goal_plan(record, top_value="financial security", horizon_months=6, num_milestones=3)
-print("\n=== Goal Plan ===")
-print(goal_plan)
-
-store.close()
+```
+temporal-paradox-resolver/
+├── app.py                          # Streamlit web app
+├── temporal_paradox_resolver/
+│   ├── commitment.py               # the commitment engine: scoring, verdicts, lock, reaffirm, reverse
+│   ├── models.py                   # DecisionRecord, Commitment, Doubt, Tripwire, Event
+│   ├── store.py                    # SQLite storage (also imports databases from the first version)
+│   ├── llm.py                      # optional Gemini features with offline fallbacks
+│   ├── cli.py                      # the `tpr` command
+│   └── __main__.py                 # `python -m temporal_paradox_resolver`
+├── tests/                          # pytest suite for the engine, storage and CLI
+├── pyproject.toml
+├── requirements.txt
+└── .env.example
 ```
 
-Run the snippet and you’ll see the narrative, tagline, pros‑cons, conclusion, and goal plan all generated by Google Gemini using your API key.
+Databases created by the first version of this project are imported automatically the first time you open them.
 
 ---
 
-## 📖 Further Reading
+## Running the tests
 
-- **Google AI Studio**: <https://aistudio.google.com/> — create & manage your Gemini API key.
-- **Streamlit docs**: <https://docs.streamlit.io/> — for customizing the web UI.
-- **SQLite docs**: <https://www.sqlite.org/> — the lightweight database used by default.
-- **GitHub repository**: <https://github.com/your-handle/temporal-paradox-resolver> — source code, issues, contributions.
+```bash
+pytest
+```
+
+The suite checks the behaviour that makes the lock trustworthy: one panicked night never breaks a decision, a single strong doubt is not enough, evidence must persist, the cooling period holds, tripwires always win, reaffirming raises the bar so the same evidence cannot flip you back, and reversal is refused while the verdict is HOLD or WATCH.
 
 ---
 
-*Happy decision‑archiving! May your past choices illuminate your future path.*
+## Ideas for what comes next
+
+- **Check-in reminders**: a weekly "still glad you chose this?" prompt, so evidence is logged steadily instead of in bursts.
+- **Commitment streaks**: days held, milestones hit, shown as progress instead of a countdown.
+- **An accountability partner**: let a trusted friend co-sign tripwires, so triggering one takes two people.
+- **Pattern insights**: across many decisions, which doubts turned out to matter and which always faded.
+- **Outcome reviews**: at 3, 6 and 12 months, rate how the decision turned out, to calibrate your future conviction.
+- **Encrypted export and sync** between devices.
