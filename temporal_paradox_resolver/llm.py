@@ -38,7 +38,7 @@ def available() -> bool:
     return True
 
 
-def _generate(prompt: str) -> Optional[str]:
+def generate(prompt: str) -> Optional[str]:
     global _client
     if not available():
         return None
@@ -89,7 +89,7 @@ def what_if(record: DecisionRecord, alternate: str) -> str:
         "and how it fits their ranked values. End with one sentence on what the chosen path gave "
         "them that this one would not. Do not invent facts that cannot be inferred."
     )
-    answer = _generate(prompt)
+    answer = generate(prompt)
     if answer:
         return answer
     alt = _find_alternative(record, alternate)
@@ -115,7 +115,7 @@ def defend_past_self(record: DecisionRecord, doubt: str) -> str:
         "serious and new, say so plainly instead of dismissing it.\n\n"
         f"{_facts(record)}\n\nDOUBT: {doubt}"
     )
-    answer = _generate(prompt)
+    answer = generate(prompt)
     if answer:
         return answer
     lines = [f"Before acting on \"{doubt}\", remember:"]
@@ -138,7 +138,7 @@ def goal_plan(record: DecisionRecord, months: int = 6, milestones: int = 3) -> s
         "measurable milestones that help the user get the most out of the decision they made. "
         "Format each line as 'Month N: <milestone>'.\n\n" + _facts(record)
     )
-    answer = _generate(prompt)
+    answer = generate(prompt)
     if answer:
         return answer
     step = max(1, months // max(1, milestones))

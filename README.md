@@ -19,6 +19,8 @@ No mood swings. No flip-flopping. No changing your mind because of one bad night
 - [How the commitment lock works](#how-the-commitment-lock-works)
 - [Quick start](#quick-start)
 - [A full example](#a-full-example)
+- [Motivation that keeps you going](#motivation-that-keeps-you-going)
+- [An honest second opinion before you commit](#an-honest-second-opinion-before-you-commit)
 - [The web app](#the-web-app)
 - [Command reference](#command-reference)
 - [Under the hood: how doubts are weighed](#under-the-hood-how-doubts-are-weighed)
@@ -189,12 +191,48 @@ Use `tpr check 3f9c` at any point to see the full verdict with every doubt's wei
 
 ---
 
+## Motivation that keeps you going
+
+Writing a decision down is the easy part. Sticking with it on day 40 is the hard part. So the resolver doesn't just store your notes. It brings them back to you:
+
+- **☀️ A fresh message every day**, built from your own reasons, what your chosen option gives you, the downsides you chose *not* to live with, your top value and your note to yourself. It changes daily, so it doesn't turn into wallpaper. With a Gemini key, it's rewritten in a warmer, more personal voice, still using only your own words.
+- **🎉 Milestones** at day 1, 3, 7, 14, 21, 30, 60, 90, 100, 180 and 365.
+- **✅ A 10-second daily check-in**: how it feels today, plus one small win. Your wins come back in later messages as proof the decision is paying off.
+- **🔥 A check-in streak** that makes showing up a habit.
+- **💪 "Why I'm doing this"**: every reason, in one list, one tap away.
+
+On the command line: `tpr motivate` for today's message, and `tpr checkin ID --mood 4 --win "..."`. To get it automatically every morning, schedule `tpr motivate` with cron (Mac/Linux) or Task Scheduler (Windows).
+
+---
+
+## An honest second opinion before you commit
+
+While you're deciding, the advisor says: **"It's okay to choose this. Before you lock it in, here's what you should know."** It never picks for you. It checks your draft for the classic traps:
+
+| Check | What it looks for |
+|---|---|
+| ⚖️ A fair comparison | The other option has no good points written, or more good points than yours |
+| 🙈 Hidden costs | No downsides listed for the option you're choosing |
+| 🎯 Your values | Your reasons don't touch the value you ranked #1 |
+| 👥 Other people's voices | Reasons that are really about what parents, friends or "everyone" expect |
+| 🕳️ Sunk cost | "I've already invested...", "can't waste..." |
+| 😨 Fear | Moving away from a fear rather than toward something |
+| ⏰ False urgency | "Now or never", "last chance" |
+| 😴 Your state | Deciding while exhausted or overwhelmed |
+| 🔭 Confidence | 10/10 certainty (blind spots) or 4/10 or less (get one more fact first) |
+| 🚩 Exits | No "I'll reconsider if..." conditions |
+
+It also shows **the honest case for the other side**: exactly what you give up by not choosing it. That way, nothing it offered can surprise you later. With a Gemini key, **Ask AI for an outside view** adds an unbiased written review. On the command line: `tpr advise ID` (or `--ai`). `tpr capture` also shows the advice before it commits.
+
+---
+
 ## The web app
 
 `streamlit run app.py` opens a simple, friendly app:
 
+- **☀️ Today**: today's motivation for each decision, your streak, and the daily check-in, right at the top.
 - **🏠 My decisions**: one card per decision with a plain-language verdict ("Stay the course") and how strong the case for changing is.
-- **➕ New decision**: eight short, numbered questions. Options get their own boxes for good things and downsides, and you pick your choice with one tap.
+- **➕ New decision**: nine short, numbered questions. Options get their own boxes for good things and downsides, and you pick your choice with one tap. Before you commit, **🧭 Check my decision** gives you the honest second opinion.
 - **Decision page**: what your past self wants you to read, an "I'm having a doubt" box that asks in everyday words (is this new? how big is it? how is your energy?), a "something I planned for happened" button, and a **Keep my decision** / **Change my decision** pair. Change stays visibly locked until the engine allows it.
 - **🔮 What if?**: the road not taken, "hear my past self out", and a plan to make your decision pay off.
 
@@ -220,6 +258,9 @@ Data is stored in `decisions.db` (override with `TPR_DB`).
 | `tpr whatif ID "Option"` | Narrative of the timeline where you chose another option. |
 | `tpr defend ID "doubt"` | Your past self's strongest honest case against a doubt. |
 | `tpr plan ID` | Milestones that turn your top value into progress on the chosen path. |
+| `tpr motivate [ID]` | Today's motivation, from your own reasons. |
+| `tpr checkin ID` | Daily check-in: `--mood 1-5`, `--win "..."`. |
+| `tpr advise ID` | The honest second opinion (`--ai` for Gemini's outside view). |
 | `tpr export` | Everything as JSON, for backup. |
 
 `ID` can be the first few characters of a decision's id. Use `--db path.db` (or `TPR_DB`) to pick a database.
@@ -272,6 +313,8 @@ temporal-paradox-resolver/
 │   ├── commitment.py               # the commitment engine: scoring, verdicts, lock, reaffirm, reverse
 │   ├── models.py                   # DecisionRecord, Commitment, Doubt, Tripwire, Event
 │   ├── store.py                    # SQLite storage (also imports databases from the first version)
+│   ├── motivation.py               # daily messages, milestones, check-ins and streaks
+│   ├── advisor.py                  # the honest, unbiased second opinion
 │   ├── llm.py                      # optional Gemini features with offline fallbacks
 │   ├── settings.py                 # saves your key to a local, git-ignored .env file
 │   ├── cli.py                      # the `tpr` command
@@ -298,8 +341,7 @@ The suite checks the behaviour that makes the lock trustworthy: one panicked nig
 
 ## Ideas for what comes next
 
-- **Check-in reminders**: a weekly "still glad you chose this?" prompt, so evidence is logged steadily instead of in bursts.
-- **Commitment streaks**: days held, milestones hit, shown as progress instead of a countdown.
+- **Phone notifications** for the daily message, without needing the app open.
 - **An accountability partner**: let a trusted friend co-sign tripwires, so triggering one takes two people.
 - **Pattern insights**: across many decisions, which doubts turned out to matter and which always faded.
 - **Outcome reviews**: at 3, 6 and 12 months, rate how the decision turned out, to calibrate your future conviction.

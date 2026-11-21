@@ -9,7 +9,7 @@ import sys
 from typing import List, Optional, Sequence
 
 from . import commitment as engine
-from . import llm
+from . import advisor, llm, motivation
 from .models import Commitment, DecisionRecord, Doubt
 from .store import DEFAULT_DB, DecisionStore
 
@@ -71,6 +71,24 @@ def _load_commitment(store: DecisionStore, record: DecisionRecord) -> Commitment
     return c
 
 
+def print_advice(advice: advisor.Advice) -> None:
+    print("\n" + advice.opening)
+    for p in advice.points:
+        print(f"  {p.icon} {p.title}: {p.detail}")
+    for line in advice.other_side:
+        print(f"  ↔ {line}")
+    print(advice.summary)
+
+
+def print_motivation(record: DecisionRecord, m: motivation.Motivation) -> None:
+    print(f"\n{m.title}  ({record.chosen or record.choice})")
+    print(f"  {m.message}")
+    if m.streak:
+        print(f"  🔥 {m.streak}-day check-in streak")
+    if m.next_milestone:
+        print(f"  Next milestone: day {m.next_milestone}")
+
+
 def print_verdict(verdict: engine.Verdict, detailed: bool = False) -> None:
     filled = min(20, int(round(verdict.ratio * 20)))
     bar = "#" * filled + "." * (20 - filled)
@@ -122,6 +140,7 @@ def cmd_capture(args, store: DecisionStore) -> None:
     print(f"Saved decision {record.id[:8]}.")
 
     if args.no_commit:
+        print_advice(advisor.review(record))
         return
     if interactive:
         print("\n=== Lock it in ===")
@@ -129,8 +148,13 @@ def cmd_capture(args, store: DecisionStore) -> None:
         anchor = _ask("A note to your future self, for the day you doubt this")
         tripwires = _ask_lines("Under what conditions WOULD you reconsider? Be specific")
         cooling = _ask_int("Cooling period in days (no reconsidering, bar tripwires)", 0, 365, 30)
+        print_advice(advisor.review(record, conviction, tripwires, context["energy_level"]))
+        if _ask("Commit to it now? (y/n)", "y").lower().startswith("n"):
+            print(f"Saved without committing. When you're ready: tpr commit {record.id[:8]}")
+            return
     else:
         conviction, anchor, tripwires, cooling = args.conviction, args.anchor or "", args.tripwire or [], args.cooling_days
+        print_advice(advisor.review(record, conviction, tripwires))
     c = store.save_commitment(engine.commit(record, conviction, anchor, tripwires, cooling))
     print(f"Committed at {c.conviction}/10 with {len(c.tripwires)} tripwire(s) "
           f"and a {c.cooling_days}-day cooling period.")
@@ -231,6 +255,33 @@ def cmd_plan(args, store: DecisionStore) -> None:
     print(llm.goal_plan(_load(store, args.id), args.months, args.milestones))
 
 
+def cmd_motivate(args, store: DecisionStore) -> None:
+    pairs = [(r, store.get_commitment(r.id)) for r in ([_load(store, args.id)] if args.id else store.list_all())]
+    pairs = [(r, c) for r, c in pairs if c and c.status == "committed"]
+    if not pairs:
+        print("Nothing to cheer on yet. Commit to a decision first with `tpr capture`.")
+    for record, c in pairs:
+        print_motivation(record, motivation.daily_message(record, c))
+
+
+def cmd_checkin(args, store: DecisionStore) -> None:
+    record = _load(store, args.id)
+    c = _load_commitment(store, record)
+    motivation.check_in(c, args.mood, args.win or "")
+    store.save_commitment(c)
+    print(f"Checked in. 🔥 Streak: {motivation.streak(c, motivation.utcnow().date())} day(s).")
+    print_motivation(record, motivation.daily_message(record, c))
+
+
+def cmd_advise(args, store: DecisionStore) -> None:
+    record = _load(store, args.id)
+    if args.ai:
+        print(advisor.outside_view(record))
+        return
+    c = store.get_commitment(record.id)
+    print_advice(advisor.review(record, c.conviction if c else 7, [t.condition for t in c.tripwires] if c else []))
+
+
 def cmd_export(args, store: DecisionStore) -> None:
     print(json.dumps(store.export(), indent=2, ensure_ascii=False))
 
@@ -317,6 +368,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--months", type=int, default=6)
     p.add_argument("--milestones", type=int, default=3)
     p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser("motivate", help="today's motivation, from your own reasons")
+    p.add_argument("id", nargs="?", help="one decision (default: all committed decisions)")
+    p.set_defaults(func=cmd_motivate)
+
+    p = sub.add_parser("checkin", help="daily check-in: how it feels and one small win")
+    p.add_argument("id")
+    p.add_argument("--mood", type=int, default=3, help="1 (rough) to 5 (great)")
+    p.add_argument("--win", help="one small win today")
+    p.set_defaults(func=cmd_checkin)
+
+    p = sub.add_parser("advise", help="an honest, unbiased review of a decision")
+    p.add_argument("id")
+    p.add_argument("--ai", action="store_true", help="ask Gemini for an outside view")
+    p.set_defaults(func=cmd_advise)
 
     sub.add_parser("export", help="dump everything as JSON").set_defaults(func=cmd_export)
     return parser

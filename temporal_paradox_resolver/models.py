@@ -163,6 +163,22 @@ class Event:
                      timestamp=d.get("timestamp") or to_iso(utcnow()))
 
 
+@dataclass
+class CheckIn:
+    """A quick daily check-in: how it feels today and one small win."""
+
+    day: str                   # YYYY-MM-DD
+    mood: int = 3              # 1 (rough) .. 5 (great)
+    win: str = ""
+
+    def __post_init__(self) -> None:
+        self.mood = _clamp(self.mood, 1, 5)
+
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "CheckIn":
+        return CheckIn(day=d.get("day", ""), mood=int(d.get("mood", 3)), win=d.get("win", ""))
+
+
 STATUS_COMMITTED = "committed"
 STATUS_REVERSED = "reversed"
 
@@ -178,6 +194,7 @@ class Commitment:
     tripwires: List[Tripwire] = field(default_factory=list)
     doubts: List[Doubt] = field(default_factory=list)
     history: List[Event] = field(default_factory=list)
+    checkins: List[CheckIn] = field(default_factory=list)
     reaffirmations: int = 0
     status: str = STATUS_COMMITTED
     locked_at: str = field(default_factory=lambda: to_iso(utcnow()))
@@ -199,6 +216,7 @@ class Commitment:
             tripwires=[Tripwire.from_dict(t) for t in d.get("tripwires", [])],
             doubts=[Doubt.from_dict(x) for x in d.get("doubts", [])],
             history=[Event.from_dict(e) for e in d.get("history", [])],
+            checkins=[CheckIn.from_dict(x) for x in d.get("checkins", [])],
             reaffirmations=int(d.get("reaffirmations", 0)),
             status=d.get("status", STATUS_COMMITTED),
             locked_at=d.get("locked_at") or to_iso(utcnow()),

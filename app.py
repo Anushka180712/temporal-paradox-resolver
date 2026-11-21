@@ -11,7 +11,7 @@ import os
 import streamlit as st
 
 from temporal_paradox_resolver import commitment as engine
-from temporal_paradox_resolver import llm, settings
+from temporal_paradox_resolver import advisor, llm, motivation, settings
 from temporal_paradox_resolver.models import STATUS_COMMITTED, DecisionRecord, Doubt
 from temporal_paradox_resolver.store import DecisionStore
 
@@ -28,6 +28,11 @@ st.markdown(
       .past-self {padding: 1rem 1.2rem; border-radius: 12px; background: rgba(120,120,160,.10);
                   white-space: pre-line; line-height: 1.6;}
       div.stButton > button {border-radius: 10px;}
+      .motivate {padding: 1.1rem 1.3rem; border-radius: 14px; margin-bottom: .6rem;
+                 background: linear-gradient(135deg, rgba(255,183,77,.22), rgba(186,104,200,.18));}
+      .motivate h4 {margin: 0 0 .4rem 0;}
+      .motivate p {margin: 0; font-size: 1.05rem; line-height: 1.55;}
+      .motivate small {opacity: .75;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -44,6 +49,7 @@ VERDICTS = {
                         "rgba(198,40,40,.14)"),
 }
 SIZE = {"Tiny": 1, "Small": 2, "Medium": 3, "Big": 4, "Huge": 5}
+MOOD = {"😣 Rough": 1, "😕 Meh": 2, "🙂 Okay": 3, "😊 Good": 4, "🤩 Great": 5}
 ENERGY = {"Exhausted": 2, "Tired": 4, "Okay": 6, "Good": 8, "Great": 10}
 STRESS = {"Calm": 2, "A little": 4, "Stressed": 6, "Very stressed": 8, "Overwhelmed": 10}
 
@@ -121,6 +127,49 @@ pairs = [(r, c) for r, c in pairs if c]
 
 
 # ---------------------------------------------------------------------------
+# Shared pieces
+# ---------------------------------------------------------------------------
+def motivation_card(record, c, key: str) -> None:
+    today = motivation.utcnow().date()
+    m = motivation.daily_message(record, c, today)
+    extra = []
+    if m.streak:
+        extra.append(f"🔥 {m.streak}-day streak")
+    if m.next_milestone:
+        extra.append(f"next milestone: day {m.next_milestone}")
+    st.markdown(f"<div class='motivate'><h4>{html.escape(m.title)}</h4><p>{html.escape(m.message)}</p>"
+                f"<small>{html.escape(' · '.join(extra))}</small></div>", unsafe_allow_html=True)
+    with st.expander("💪 Why I'm doing this"):
+        for reason in m.why:
+            st.write("• " + reason)
+    if motivation.checked_in_today(c, today):
+        st.caption("✅ You checked in today. See you tomorrow!")
+        return
+    with st.form(f"checkin_{key}", clear_on_submit=True):
+        st.markdown("**Daily check-in** · takes 10 seconds")
+        mood = st.select_slider("How does it feel today?", options=list(MOOD), value="🙂 Okay")
+        win = st.text_input("One small win today (optional)", placeholder="e.g. Finished my first project task")
+        if st.form_submit_button("✅ Check in", type="primary"):
+            motivation.check_in(c, MOOD[mood], win, today)
+            store.save_commitment(c)
+            st.session_state.flash = "Checked in! 🔥"
+            st.rerun()
+
+
+def show_advice(advice: advisor.Advice) -> None:
+    st.markdown(f"**{advice.opening}**")
+    if not advice.points:
+        st.write("Nothing worrying stands out.")
+    for p in advice.points:
+        st.markdown(f"{p.icon} **{p.title}**  \n{p.detail}")
+    if advice.other_side:
+        st.markdown("**↔️ The honest case for the other side**")
+        for line in advice.other_side:
+            st.write("• " + line)
+    (st.success if advice.ready else st.info)(advice.summary)
+
+
+# ---------------------------------------------------------------------------
 # Views
 # ---------------------------------------------------------------------------
 def view_home() -> None:
@@ -131,6 +180,12 @@ def view_home() -> None:
         if st.button("➕ Record my first decision", type="primary"):
             go("new")
         return
+    active = [(r, c) for r, c in pairs if c.status == STATUS_COMMITTED]
+    if active:
+        st.markdown("### ☀️ Today")
+        for record, c in active[:3]:
+            motivation_card(record, c, f"home_{record.id}")
+        st.write("")
     st.markdown("### My decisions")
     for record, c in pairs:
         with st.container(border=True):
@@ -169,6 +224,8 @@ def view_detail() -> None:
     st.markdown(f"<div class='verdict' style='background:{color}'><h3>{icon} {headline}</h3>"
                 f"<p>{explain}</p></div>", unsafe_allow_html=True)
     st.progress(min(1.0, v.ratio), text=f"Case for changing: {v.evidence:.1f} of {v.threshold:.1f} needed")
+
+    motivation_card(record, c, "detail")
 
     st.markdown("#### 💌 Your past self says")
     st.markdown(f"<div class='past-self'>{html.escape(engine.reminder(c, record))}</div>", unsafe_allow_html=True)
@@ -279,10 +336,33 @@ def view_new() -> None:
     tripwires = st.text_area("**8. I'll only reconsider if...** one condition per line",
                              key=f"trip{r}", placeholder="The company runs out of money\n"
                                                          "I'm unhappy for three months in a row")
+    st.markdown("**9. How are you feeling right now?**")
+    col1, col2 = st.columns(2)
+    energy = col1.select_slider("Energy", options=list(ENERGY), value="Okay", key=f"energy{r}")
+    stress = col2.select_slider("Stress", options=list(STRESS), value="A little", key=f"stress{r}")
     with st.expander("More settings"):
         cooling = st.number_input("Settling-in period (days). Ordinary doubts can't unlock the decision "
                                   "during this time.", 0, 365, 30, key=f"cool{r}")
         tags = st.text_input("Tags (comma-separated)", key=f"tags{r}")
+
+    draft = DecisionRecord(choice=choice.strip(), chosen=chosen or "", values_ranked=lines(values),
+                           alternatives=options, reasoning=reasoning.strip())
+    st.write("")
+    with st.container(border=True):
+        st.markdown("#### 🧭 Honest second opinion")
+        st.caption("Not to change your mind. Just so you decide with open eyes.")
+        a_col, b_col = st.columns(2)
+        if a_col.button("Check my decision", use_container_width=True, disabled=len(options) < 2):
+            st.session_state[f"advice{r}"] = True
+        if llm.available() and b_col.button("Ask AI for an outside view", use_container_width=True,
+                                            disabled=len(options) < 2):
+            with st.spinner("Thinking it through..."):
+                st.session_state[f"outside{r}"] = advisor.outside_view(draft)
+        if st.session_state.get(f"advice{r}"):
+            show_advice(advisor.review(draft, conviction, lines(tripwires), ENERGY[energy], STRESS[stress]))
+        if st.session_state.get(f"outside{r}"):
+            st.markdown("**🤖 Outside view**")
+            st.markdown(st.session_state[f"outside{r}"])
 
     if st.button("🔒 Commit to this decision", type="primary", use_container_width=True):
         missing = [label for label, ok in [("what you're deciding", choice.strip()),
@@ -293,7 +373,8 @@ def view_new() -> None:
             return
         record = store.add(DecisionRecord(
             choice=choice.strip(), chosen=chosen or "", values_ranked=lines(values), alternatives=options,
-            reasoning=reasoning.strip(), tags=[t.strip() for t in tags.split(",") if t.strip()]))
+            reasoning=reasoning.strip(), tags=[t.strip() for t in tags.split(",") if t.strip()],
+            context={"energy_level": ENERGY[energy], "stress_level": STRESS[stress]}))
         store.save_commitment(engine.commit(record, conviction, anchor, lines(tripwires), int(cooling)))
         st.session_state.form_round += 1
         st.session_state.flash = f"Committed to {record.chosen}. 💪"
