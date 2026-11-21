@@ -1,6 +1,10 @@
-# Core dependencies
-google-genai>=0.8.0
-streamlit>=1.35.0   # optional, for web UI
+# The core (CLI + commitment engine) uses only the Python standard library.
 
-# Optional – convenient .env handling (not required; os.getenv used)
-python-dotenv>=1.0.0
+# Web UI
+streamlit>=1.35.0
+
+# Optional: richer what-if narratives and "defend my past self" answers
+google-genai>=0.8.0
+
+# Tests
+pytest>=8
