@@ -89,7 +89,7 @@ git clone https://github.com/Anushka180712/temporal-paradox-resolver.git
 cd temporal-paradox-resolver
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[ui,dev]"         # add ,llm for the optional Gemini features
+pip install -e ".[ui,dev]"         # app, AI helper and tests
 ```
 
 That installs a `tpr` command. Capture your first decision interactively:
@@ -191,11 +191,14 @@ Use `tpr check 3f9c` at any point to see the full verdict with every doubt's wei
 
 ## The web app
 
-`streamlit run app.py` opens three tabs:
+`streamlit run app.py` opens a simple, friendly app:
 
-- **📝 Decide**: capture the decision, options, values, conviction, note to self, tripwires and cooling period in one form.
-- **🔒 Hold the line**: your past self's reminder at the top, the live verdict with a progress bar toward the bar, a form to log doubts (with energy and stress sliders), tripwire triggers, and the reaffirm / reverse review. Reverse stays locked until the verdict allows it.
-- **🔮 Explore**: simulate the road not taken, argue with your past self, and get a plan to make the decision pay off.
+- **🏠 My decisions**: one card per decision with a plain-language verdict ("Stay the course") and how strong the case for changing is.
+- **➕ New decision**: eight short, numbered questions. Options get their own boxes for good things and downsides, and you pick your choice with one tap.
+- **Decision page**: what your past self wants you to read, an "I'm having a doubt" box that asks in everyday words (is this new? how big is it? how is your energy?), a "something I planned for happened" button, and a **Keep my decision** / **Change my decision** pair. Change stays visibly locked until the engine allows it.
+- **🔮 What if?**: the road not taken, "hear my past self out", and a plan to make your decision pay off.
+
+**Adding your Gemini key is a paste:** open the sidebar, paste the key under ⚙️ Settings, press **Save key**. It is stored only on your computer in a `.env` file that git ignores, so it never ends up in the code or on GitHub. **Remove key** deletes it again.
 
 Data is stored in `decisions.db` (override with `TPR_DB`).
 
@@ -252,7 +255,7 @@ Otherwise it is **WATCH** if evidence is at least 60% of the bar, and **HOLD** b
 
 ## Optional AI features
 
-Set `GEMINI_API_KEY` (see `.env.example`) and install `google-genai` to get richer text for `whatif`, `defend` and `plan`. The model defaults to `gemini-3.5-flash` and can be changed with `TPR_GEMINI_MODEL`.
+Paste a key in the app's ⚙️ Settings, or set `GEMINI_API_KEY` in your environment or in a local `.env` file (see `.env.example`), to get richer text for `whatif`, `defend` and `plan`. The model defaults to `gemini-3.5-flash` and can be changed with `TPR_GEMINI_MODEL`.
 
 Without a key, all three still work, with offline answers built from your own notes. **The AI never decides whether you hold or reverse.** That stays deterministic on purpose.
 
@@ -270,6 +273,7 @@ temporal-paradox-resolver/
 │   ├── models.py                   # DecisionRecord, Commitment, Doubt, Tripwire, Event
 │   ├── store.py                    # SQLite storage (also imports databases from the first version)
 │   ├── llm.py                      # optional Gemini features with offline fallbacks
+│   ├── settings.py                 # saves your key to a local, git-ignored .env file
 │   ├── cli.py                      # the `tpr` command
 │   └── __main__.py                 # `python -m temporal_paradox_resolver`
 ├── tests/                          # pytest suite for the engine, storage and CLI

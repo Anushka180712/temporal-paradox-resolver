@@ -85,3 +85,18 @@ def test_llm_features_work_offline(monkeypatch):
     assert "fun" in llm.what_if(r, "B")
     assert "quiet life" in llm.defend_past_self(r, "B looks fun")
     assert llm.goal_plan(r).count("Month") == 3
+
+
+def test_key_is_saved_to_env_file_and_removed(tmp_path, monkeypatch):
+    from temporal_paradox_resolver import settings
+    env = tmp_path / ".env"
+    env.write_text("# my settings\nTPR_DB=x.db\n")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    settings.save_key("  abcdefgh12345678 ", env)
+    assert settings.read_env(env) == {"TPR_DB": "x.db", "GEMINI_API_KEY": "abcdefgh12345678"}
+    assert settings.masked_key() == "••••5678"
+    settings.save_key("newkey123456789", env)
+    assert env.read_text().count("GEMINI_API_KEY") == 1
+    settings.clear_key(env)
+    assert "GEMINI_API_KEY" not in env.read_text() and "TPR_DB=x.db" in env.read_text()
+    assert settings.masked_key() == ""

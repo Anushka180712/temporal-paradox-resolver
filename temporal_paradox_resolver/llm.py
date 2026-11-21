@@ -13,10 +13,19 @@ import os
 from typing import Optional
 
 from .models import DecisionRecord
+from .settings import load_env
+
+load_env()
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 
 _client = None
+
+
+def reset() -> None:
+    """Forget the cached client, e.g. after the key changes in Settings."""
+    global _client
+    _client = None
 
 
 def available() -> bool:

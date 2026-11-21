@@ -1,23 +1,51 @@
-"""Streamlit web UI for the Temporal Paradox Resolver.
+"""Streamlit web app for the Temporal Paradox Resolver.
 
 Run with:  streamlit run app.py
 """
 
 from __future__ import annotations
 
+import html
 import os
 
 import streamlit as st
 
 from temporal_paradox_resolver import commitment as engine
-from temporal_paradox_resolver import llm
-from temporal_paradox_resolver.cli import parse_alternative
-from temporal_paradox_resolver.models import DecisionRecord, Doubt
+from temporal_paradox_resolver import llm, settings
+from temporal_paradox_resolver.models import STATUS_COMMITTED, DecisionRecord, Doubt
 from temporal_paradox_resolver.store import DecisionStore
 
+settings.load_env()
 st.set_page_config(page_title="Temporal Paradox Resolver", page_icon="⏳", layout="centered")
 
-COLORS = {engine.HOLD: "#2e7d32", engine.WATCH: "#ed6c02", engine.RECONSIDER: "#c62828"}
+st.markdown(
+    """
+    <style>
+      .block-container {max-width: 760px; padding-top: 2rem;}
+      .verdict {padding: 1rem 1.2rem; border-radius: 12px; margin: .5rem 0 1rem 0;}
+      .verdict h3 {margin: 0 0 .25rem 0;}
+      .verdict p {margin: 0; opacity: .85;}
+      .past-self {padding: 1rem 1.2rem; border-radius: 12px; background: rgba(120,120,160,.10);
+                  white-space: pre-line; line-height: 1.6;}
+      div.stButton > button {border-radius: 10px;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+VERDICTS = {
+    engine.HOLD: ("🟢", "Stay the course.", "Your past self had good reasons. Nothing so far changes them.",
+                  "rgba(46,125,50,.14)"),
+    engine.WATCH: ("🟠", "Stay the course, and keep an eye on it.",
+                   "Some real concerns are building. Keep noting them honestly instead of acting on them.",
+                   "rgba(237,108,2,.14)"),
+    engine.RECONSIDER: ("🔴", "Time for an honest second look.",
+                        "Something real has changed. You can now keep your decision or change it.",
+                        "rgba(198,40,40,.14)"),
+}
+SIZE = {"Tiny": 1, "Small": 2, "Medium": 3, "Big": 4, "Huge": 5}
+ENERGY = {"Exhausted": 2, "Tired": 4, "Okay": 6, "Good": 8, "Great": 10}
+STRESS = {"Calm": 2, "A little": 4, "Stressed": 6, "Very stressed": 8, "Overwhelmed": 10}
 
 
 @st.cache_resource
@@ -26,158 +54,283 @@ def get_store() -> DecisionStore:
 
 
 def lines(text: str) -> list[str]:
-    return [line.strip() for line in text.splitlines() if line.strip()]
+    return [line.strip() for line in (text or "").splitlines() if line.strip()]
 
 
-def show_verdict(verdict: engine.Verdict) -> None:
-    color = COLORS[verdict.decision]
-    st.markdown(
-        f"<div style='border-left:6px solid {color};padding:0.6rem 1rem;border-radius:4px'>"
-        f"<b style='color:{color};font-size:1.3rem'>{verdict.decision}</b>"
-        f"&nbsp;&nbsp;evidence {verdict.evidence:.1f} of {verdict.threshold:.1f} needed</div>",
-        unsafe_allow_html=True,
-    )
-    st.progress(min(1.0, verdict.ratio))
-    for reason in verdict.reasons:
-        st.write("• " + reason)
-    if verdict.scored_doubts:
-        with st.expander("How each doubt was weighed"):
-            for s in verdict.scored_doubts:
-                st.write(f"**{s.score:.2f}** · {s.doubt.text}")
-                st.caption("; ".join(s.factors))
+def go(view: str, decision_id: str | None = None) -> None:
+    st.session_state.view = view
+    st.session_state.open_id = decision_id
+    st.rerun()
 
 
 store = get_store()
-st.title("⏳ Temporal Paradox Resolver")
-st.caption("Decide once, calmly. Then hold, unless something real changes.")
-if not llm.available():
-    st.caption("Running offline: set GEMINI_API_KEY for richer what-if and past-self answers.")
-
-tab_capture, tab_hold, tab_explore = st.tabs(["📝 Decide", "🔒 Hold the line", "🔮 Explore"])
+st.session_state.setdefault("view", "home")
+st.session_state.setdefault("open_id", None)
+st.session_state.setdefault("form_round", 0)
+if "flash" in st.session_state:
+    st.toast(st.session_state.pop("flash"))
 
 # ---------------------------------------------------------------------------
-with tab_capture:
-    with st.form("capture", clear_on_submit=True):
-        choice = st.text_area("What did you decide? (your own words)*")
-        alts = st.text_area(
-            "Every option you weighed, one per line: Name | pro; pro | con; con*",
-            placeholder="Startup | learning; ownership | risk; lower pay\nBank | salary; stability | slow growth",
-        )
-        chosen = st.text_input("Which option did you choose?*")
-        values = st.text_area("What matters most here, ranked (one per line)*")
-        reasoning = st.text_area("Why this option?")
-        st.divider()
-        conviction = st.slider("How sure are you?", 1, 10, 7)
-        anchor = st.text_area("A note to your future self, for the day you doubt this")
-        tripwires = st.text_area("I will reconsider ONLY if... (one condition per line)")
-        cooling = st.number_input("Cooling period (days)", 0, 365, 30)
-        tags = st.text_input("Tags (comma-separated)")
-        submitted = st.form_submit_button("Decide and commit")
-
-    if submitted:
-        options = [parse_alternative(a) for a in lines(alts)]
-        if not (choice.strip() and options and chosen.strip() and lines(values)):
-            st.error("Please fill in the decision, the options, your choice and your values.")
+# Sidebar: settings
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Settings")
+    st.subheader("AI helper (optional)")
+    if settings.masked_key():
+        if llm.available():
+            st.success(f"Connected  {settings.masked_key()}")
         else:
-            record = store.add(DecisionRecord(
-                choice=choice.strip(), chosen=chosen.strip(), values_ranked=lines(values),
-                alternatives=options, reasoning=reasoning.strip(),
-                tags=[t.strip() for t in tags.split(",") if t.strip()],
-            ))
-            store.save_commitment(engine.commit(record, conviction, anchor, lines(tripwires), int(cooling)))
-            st.success(f"Committed. You chose {record.chosen}, at {conviction}/10.")
+            st.warning(f"Key saved {settings.masked_key()}, but the AI package is missing. "
+                       "Run `pip install google-genai` and restart the app.")
+        if st.button("Remove key"):
+            settings.clear_key()
+            llm.reset()
+            st.session_state.flash = "Key removed."
+            st.rerun()
+    else:
+        st.info("Off. Everything still works; answers come from your own notes.")
+    with st.form("key_form", clear_on_submit=True):
+        new_key = st.text_input("Paste your Gemini key", type="password",
+                                placeholder="Get one free at aistudio.google.com")
+        if st.form_submit_button("Save key", use_container_width=True) and new_key.strip():
+            settings.save_key(new_key)
+            llm.reset()
+            st.session_state.flash = "Key saved on this computer."
+            st.rerun()
+    st.caption("🔐 Your key is saved only on this computer, in a `.env` file that is never "
+               "uploaded to GitHub. [Get a free key](https://aistudio.google.com/apikey)")
+
+# ---------------------------------------------------------------------------
+# Header and navigation
+# ---------------------------------------------------------------------------
+st.title("⏳ Temporal Paradox Resolver")
+st.caption("Decide once, calmly. Then hold the line, unless something real changes.")
+
+nav = st.columns(3)
+if nav[0].button("🏠 My decisions", use_container_width=True):
+    go("home")
+if nav[1].button("➕ New decision", use_container_width=True, type="primary"):
+    go("new")
+if nav[2].button("🔮 What if?", use_container_width=True):
+    go("explore")
+st.write("")
 
 records = store.list_all()
-committed = [(r, store.get_commitment(r.id)) for r in records]
-committed = [(r, c) for r, c in committed if c]
-
-
-def pick(label: str, key: str):
-    if not committed:
-        st.info("No committed decisions yet. Start in the Decide tab.")
-        return None, None
-    idx = st.selectbox(label, range(len(committed)), key=key,
-                       format_func=lambda i: f"{committed[i][0].chosen or committed[i][0].choice[:50]}"
-                                             f" ({committed[i][1].status})")
-    return committed[idx]
+pairs = [(r, store.get_commitment(r.id)) for r in records]
+pairs = [(r, c) for r, c in pairs if c]
 
 
 # ---------------------------------------------------------------------------
-with tab_hold:
-    record, c = pick("Decision", "hold_pick")
-    if record:
-        st.info(engine.reminder(c, record))
-        if c.status != "committed":
-            st.warning("This decision was reversed. History is kept below.")
-        else:
-            show_verdict(engine.evaluate(c, record))
+# Views
+# ---------------------------------------------------------------------------
+def view_home() -> None:
+    if not pairs:
+        st.markdown("### Welcome 👋")
+        st.write("Made a big choice recently, or about to? Write it down while your head is clear. "
+                 "When doubts show up later, this app helps you tell a bad day from a real reason to change.")
+        if st.button("➕ Record my first decision", type="primary"):
+            go("new")
+        return
+    st.markdown("### My decisions")
+    for record, c in pairs:
+        with st.container(border=True):
+            left, right = st.columns([4, 1])
+            title = record.chosen or record.choice
+            if c.status != STATUS_COMMITTED:
+                left.markdown(f"**{title}**  \n↩️ Changed. Kept for your records.")
+            else:
+                v = engine.evaluate(c, record)
+                icon, headline, _, _ = VERDICTS[v.decision]
+                left.markdown(f"**{title}**  \n{icon} {headline} · held {v.days_committed} day(s)")
+                left.progress(min(1.0, v.ratio), text="Case for changing")
+            if right.button("Open", key=f"open_{record.id}", use_container_width=True):
+                go("detail", record.id)
 
-            st.subheader("Having a doubt? Log it here instead of acting on it.")
-            with st.form("doubt", clear_on_submit=True):
-                text = st.text_area("What is bothering you?")
-                new = st.checkbox("This is information I did not have when I decided")
-                value = st.selectbox("Which value does it touch?", ["(none)"] + record.values_ranked)
-                severity = st.slider("How serious is it?", 1, 5, 3)
-                col1, col2 = st.columns(2)
-                energy = col1.slider("Your energy right now", 1, 10, 6)
-                stress = col2.slider("Your stress right now", 1, 10, 4)
-                if st.form_submit_button("Log doubt") and text.strip():
-                    engine.log_doubt(c, Doubt(text=text.strip(), is_new_information=new,
-                                              affects_value="" if value == "(none)" else value,
-                                              severity=severity, energy_level=energy, stress_level=stress))
-                    store.save_commitment(c)
-                    st.rerun()
 
-            active = [t for t in c.tripwires if not t.triggered]
-            if active:
-                st.subheader("Did one of your conditions actually happen?")
-                with st.form("trip"):
-                    which = st.selectbox("Tripwire", range(len(c.tripwires)),
-                                         format_func=lambda i: c.tripwires[i].condition)
-                    evidence = st.text_input("What happened?")
-                    if st.form_submit_button("It happened"):
-                        engine.trigger_tripwire(c, str(which + 1), evidence)
-                        store.save_commitment(c)
-                        st.rerun()
+def view_detail() -> None:
+    found = [(r, c) for r, c in pairs if r.id == st.session_state.open_id]
+    if not found:
+        go("home")
+    record, c = found[0]
 
-            st.subheader("Review")
+    if st.button("← Back"):
+        go("home")
+    st.markdown(f"## {record.chosen or record.choice}")
+    if record.chosen and record.choice != record.chosen:
+        st.caption(record.choice)
+
+    if c.status != STATUS_COMMITTED:
+        st.info("You changed this decision. Here is the record of how you got there.")
+        show_history(c)
+        return
+
+    v = engine.evaluate(c, record)
+    icon, headline, explain, color = VERDICTS[v.decision]
+    st.markdown(f"<div class='verdict' style='background:{color}'><h3>{icon} {headline}</h3>"
+                f"<p>{explain}</p></div>", unsafe_allow_html=True)
+    st.progress(min(1.0, v.ratio), text=f"Case for changing: {v.evidence:.1f} of {v.threshold:.1f} needed")
+
+    st.markdown("#### 💌 Your past self says")
+    st.markdown(f"<div class='past-self'>{html.escape(engine.reminder(c, record))}</div>", unsafe_allow_html=True)
+    st.write("")
+
+    with st.expander("😟 I'm having a doubt", expanded=v.decision != engine.RECONSIDER):
+        with st.form("doubt", clear_on_submit=True):
+            text = st.text_area("What's bothering you?", placeholder="Say it in your own words")
+            known = st.radio("Did you know this when you decided?",
+                             ["No, this is new", "Yes, I already knew it"], horizontal=True)
+            value = st.selectbox("What does it affect most?", record.values_ranked + ["Something else"])
+            size = st.select_slider("How big is it?", options=list(SIZE), value="Medium")
             col1, col2 = st.columns(2)
-            with col1, st.form("reaffirm"):
-                note = st.text_input("Why you are choosing this again")
-                if st.form_submit_button("Reaffirm"):
-                    engine.reaffirm(c, note)
+            energy = col1.select_slider("How's your energy?", options=list(ENERGY), value="Okay")
+            stress = col2.select_slider("How stressed are you?", options=list(STRESS), value="A little")
+            if st.form_submit_button("Write it down", type="primary") and text.strip():
+                engine.log_doubt(c, Doubt(
+                    text=text.strip(), is_new_information=known.startswith("No"),
+                    affects_value="" if value == "Something else" else value,
+                    severity=SIZE[size], energy_level=ENERGY[energy], stress_level=STRESS[stress]))
+                store.save_commitment(c)
+                st.session_state.flash = "Written down. It's been weighed, not acted on."
+                st.rerun()
+        st.caption("Not sure if it's a real reason? Try **What if?** → *Hear my past self out*.")
+
+    pending = [t for t in c.tripwires if not t.triggered]
+    if pending:
+        with st.expander("🚩 Something I planned for has happened"):
+            with st.form("trip"):
+                which = st.radio("Which one?", range(len(c.tripwires)),
+                                 format_func=lambda i: c.tripwires[i].condition)
+                evidence = st.text_input("What happened?")
+                if st.form_submit_button("Yes, this happened"):
+                    engine.trigger_tripwire(c, str(which + 1), evidence)
                     store.save_commitment(c)
                     st.rerun()
-            with col2, st.form("reverse"):
-                reason = st.text_area("Why you are changing course")
-                if st.form_submit_button("Reverse decision"):
-                    try:
-                        engine.reverse(c, record, reason)
-                        store.save_commitment(c)
-                        st.rerun()
-                    except engine.CommitmentLocked:
-                        st.error("Locked. The engine is holding this decision; see the verdict above.")
-                    except ValueError as err:
-                        st.error(str(err))
 
-        with st.expander("History"):
-            for e in reversed(c.history):
-                st.write(f"`{e.timestamp[:16]}` **{e.kind}** {e.detail}")
+    st.markdown("#### Decide again")
+    keep, change = st.columns(2)
+    with keep.form("reaffirm", clear_on_submit=True):
+        note = st.text_input("Why I'm keeping it (optional)")
+        if st.form_submit_button("💪 Keep my decision", use_container_width=True):
+            engine.reaffirm(c, note)
+            store.save_commitment(c)
+            st.session_state.flash = "Kept. It's now even harder to shake."
+            st.rerun()
+    with change.form("reverse"):
+        locked = not v.can_reverse
+        reason = st.text_input("Why I'm changing it", disabled=locked)
+        if st.form_submit_button("🔒 Locked for now" if locked else "↩️ Change my decision",
+                                 use_container_width=True, disabled=locked):
+            try:
+                engine.reverse(c, record, reason)
+                store.save_commitment(c)
+                st.session_state.flash = "Changed and recorded. Record your new decision next."
+                go("new")
+            except ValueError as err:
+                st.error(str(err))
+    if not v.can_reverse:
+        st.caption("Changing is unlocked only when something you planned for happens, "
+                   "or when strong new reasons keep showing up for over a week.")
 
-# ---------------------------------------------------------------------------
-with tab_explore:
-    record, c = pick("Decision", "explore_pick")
-    if record:
+    with st.expander("Why this answer?"):
+        for reason in v.reasons:
+            st.write("• " + reason)
+        for s in v.scored_doubts:
+            st.write(f"**{s.score:.2f}** · {s.doubt.text}")
+            st.caption("; ".join(s.factors))
+    show_history(c)
+
+
+def show_history(c) -> None:
+    with st.expander("📜 History"):
+        for e in reversed(c.history):
+            st.write(f"`{e.timestamp[:10]}` **{e.kind}** {e.detail}")
+
+
+def view_new() -> None:
+    r = st.session_state.form_round
+    st.markdown("### ➕ New decision")
+    st.caption("Take your time. The calmer and more honest you are now, the more this helps later.")
+
+    choice = st.text_input("**1. What are you deciding?**", key=f"choice{r}",
+                           placeholder="e.g. Which job offer to accept")
+
+    st.markdown("**2. What are your options?**")
+    count = st.number_input("How many options?", 2, 6, 2, key=f"count{r}")
+    options = []
+    for i in range(int(count)):
+        with st.container(border=True):
+            name = st.text_input(f"Option {i + 1}", key=f"name{r}_{i}", placeholder="Name it")
+            col1, col2 = st.columns(2)
+            pros = col1.text_area("👍 Good things", key=f"pros{r}_{i}", height=90, placeholder="One per line")
+            cons = col2.text_area("👎 Downsides", key=f"cons{r}_{i}", height=90, placeholder="One per line")
+            if name.strip():
+                options.append({"name": name.strip(), "pros": lines(pros), "cons": lines(cons)})
+
+    names = [o["name"] for o in options]
+    chosen = st.radio("**3. Which one are you choosing?**", names, horizontal=True,
+                      key=f"chosen{r}") if names else None
+    values = st.text_area("**4. What matters most to you here?** Most important first, one per line",
+                          key=f"values{r}", placeholder="growth\nfamily\nmoney")
+    reasoning = st.text_area("**5. Why this option?**", key=f"why{r}",
+                             placeholder="In a sentence or two, in your own words")
+    conviction = st.slider("**6. How sure are you?**", 1, 10, 7, key=f"sure{r}")
+    anchor = st.text_area("**7. A note to your future self** for the day you doubt this",
+                          key=f"anchor{r}", placeholder="You knew it would be hard. You chose it anyway because...")
+    tripwires = st.text_area("**8. I'll only reconsider if...** one condition per line",
+                             key=f"trip{r}", placeholder="The company runs out of money\n"
+                                                         "I'm unhappy for three months in a row")
+    with st.expander("More settings"):
+        cooling = st.number_input("Settling-in period (days). Ordinary doubts can't unlock the decision "
+                                  "during this time.", 0, 365, 30, key=f"cool{r}")
+        tags = st.text_input("Tags (comma-separated)", key=f"tags{r}")
+
+    if st.button("🔒 Commit to this decision", type="primary", use_container_width=True):
+        missing = [label for label, ok in [("what you're deciding", choice.strip()),
+                                           ("at least two named options", len(options) >= 2),
+                                           ("what matters most", lines(values))] if not ok]
+        if missing:
+            st.error("Please add " + ", ".join(missing) + ".")
+            return
+        record = store.add(DecisionRecord(
+            choice=choice.strip(), chosen=chosen or "", values_ranked=lines(values), alternatives=options,
+            reasoning=reasoning.strip(), tags=[t.strip() for t in tags.split(",") if t.strip()]))
+        store.save_commitment(engine.commit(record, conviction, anchor, lines(tripwires), int(cooling)))
+        st.session_state.form_round += 1
+        st.session_state.flash = f"Committed to {record.chosen}. 💪"
+        go("detail", record.id)
+
+
+def view_explore() -> None:
+    st.markdown("### 🔮 What if?")
+    if not pairs:
+        st.info("Record a decision first, then come back to explore it.")
+        return
+    idx = st.selectbox("Decision", range(len(pairs)),
+                       format_func=lambda i: pairs[i][0].chosen or pairs[i][0].choice)
+    record = pairs[idx][0]
+    if not llm.available():
+        st.caption("Tip: add a Gemini key in ⚙️ Settings (sidebar) for richer answers.")
+
+    with st.container(border=True):
+        st.markdown("**🛤️ The road not taken**")
         others = [a["name"] for a in record.unchosen()] or record.alternative_names()
         if others:
-            alt = st.selectbox("The road not taken", others)
-            if st.button("Show me that timeline"):
-                with st.spinner("Simulating..."):
+            alt = st.selectbox("Imagine you had chosen", others)
+            if st.button("Show me that life"):
+                with st.spinner("Imagining..."):
                     st.markdown(llm.what_if(record, alt))
-        doubt_text = st.text_input("Argue with your past self: what is your doubt?")
-        if st.button("Hear the other side") and doubt_text:
-            with st.spinner("Asking your past self..."):
-                st.markdown(llm.defend_past_self(record, doubt_text))
-        if st.button("Plan to make this decision pay off"):
+    with st.container(border=True):
+        st.markdown("**🗣️ Hear my past self out**")
+        doubt = st.text_input("What's your doubt?")
+        if st.button("Make the case") and doubt.strip():
+            with st.spinner("Thinking..."):
+                st.markdown(llm.defend_past_self(record, doubt))
+    with st.container(border=True):
+        st.markdown("**🗺️ Make it pay off**")
+        if st.button("Give me a plan"):
             with st.spinner("Planning..."):
                 st.markdown(llm.goal_plan(record))
+
+
+{"home": view_home, "detail": view_detail, "new": view_new, "explore": view_explore}.get(
+    st.session_state.view, view_home)()
